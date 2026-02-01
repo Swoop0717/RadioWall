@@ -1,0 +1,39 @@
+# RadioWall Configuration
+# Copy to config.yaml and adjust for your setup
+
+touch:
+  # Touch device path (auto-detect if null)
+  device: null
+  # Touch surface dimensions (will be auto-detected from device)
+  width: 1920
+  height: 1080
+
+map:
+  # Pixel coordinates of map corners on touch surface
+  # Adjust these after calibration
+  top_left: [0, 0]
+  bottom_right: [1920, 1080]
+  
+  # Geographic bounds of your map
+  # Standard world map (equirectangular):
+  lat_north: 90
+  lat_south: -90
+  lon_west: -180
+  lon_east: 180
+
+audio:
+  # UPnP device name (null for auto-discover first available)
+  upnp_device: null
+  # Number of nearest stations to consider
+  n_stations: 20
+  
+selection:
+  # How to pick a station when multiple are nearby
+  # Options: "random", "nearest", "first"
+  mode: "random"
+
+# Radio.garden API base URL
+api:
+  base_url: "http://radio.garden/api/ara/content"
+  # Cache places list for this many seconds (reduces API calls)
+  cache_ttl: 3600

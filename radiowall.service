@@ -1,0 +1,22 @@
+[Unit]
+Description=RadioWall - Interactive Map Radio Player
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/RadioWall
+ExecStart=/home/pi/RadioWall/.venv/bin/python -m src.main
+Restart=always
+RestartSec=10
+
+# Give access to input devices for touch
+SupplementaryGroups=input
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
