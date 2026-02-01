@@ -53,6 +53,11 @@ class RadioWallServer:
         self.mqtt = MqttHandler(config.get("mqtt", {}))
         self._loop = asyncio.new_event_loop()
 
+        # State for next/replay commands
+        self._candidates: list[dict] = []
+        self._current_index: int = -1
+        self._last_touch: tuple[int, int] | None = None
+
     def start(self):
         logger.info("Starting RadioWall server")
 
@@ -76,39 +81,74 @@ class RadioWallServer:
         logger.info("Touch (%d, %d) -> coordinates (%.2f, %.2f)", x, y, lat, lon)
 
         self.mqtt.publish_status("loading")
+        self._last_touch = (x, y)
 
         try:
-            result = self.radio.find_nearest_stations(lat, lon)
+            self._candidates = self.radio.find_nearest_stations(lat, lon)
+            self._current_index = -1
         except Exception:
             logger.exception("Failed to find stations")
             self.mqtt.publish_status("error", "No stations found")
             return
 
-        station_name = result["station_name"]
-        location = result["location"]
-        country = result["country"]
-        stream_url = result["stream_url"]
+        self._play_next_candidate()
 
-        logger.info("Playing %s from %s, %s", station_name, location, country)
+    def _play_next_candidate(self):
+        """Try candidates starting from _current_index + 1 until one works."""
+        start = self._current_index + 1
 
-        # Stream to speaker
-        success = self._loop.run_until_complete(
-            self.upnp.play(stream_url, title=f"{station_name} - {location}")
-        )
+        for i in range(start, len(self._candidates)):
+            station = self._candidates[i]
+            station_name = station["station_name"]
+            location = station["location"]
+            country = station["country"]
 
-        if success:
-            self.mqtt.publish_now_playing(station_name, location, country)
-            self.mqtt.publish_status("playing")
-        else:
-            self.mqtt.publish_status("error", "Playback failed")
+            stream_url = self.radio.get_stream_url(station["station_id"])
+
+            if not self.radio.check_stream(stream_url):
+                logger.warning("Dead stream [%d/%d]: %s", i + 1, len(self._candidates), station_name)
+                continue
+
+            logger.info("Playing %s from %s, %s", station_name, location, country)
+
+            success = self._loop.run_until_complete(
+                self.upnp.play(stream_url, title=f"{station_name} - {location}")
+            )
+
+            if success:
+                self._current_index = i
+                self.mqtt.publish_now_playing(station_name, location, country)
+                self.mqtt.publish_status("playing")
+                return
+            else:
+                logger.warning("UPnP playback failed for %s, trying next", station_name)
+                continue
+
+        logger.error("No more working stations in candidate list")
+        self.mqtt.publish_status("error", "No more stations")
 
     def _handle_command(self, cmd: str):
         """Called when a command is received from the ESP32."""
         if cmd == "stop":
+            logger.info("Command: stop")
             self._loop.run_until_complete(self.upnp.stop())
             self.mqtt.publish_status("stopped")
+
+        elif cmd == "next":
+            logger.info("Command: next")
+            if not self._candidates:
+                self.mqtt.publish_status("error", "No stations loaded")
+                return
+            self.mqtt.publish_status("loading")
+            self._play_next_candidate()
+
         elif cmd == "replay":
-            logger.info("Replay not yet implemented")
+            logger.info("Command: replay (re-touch same location)")
+            if self._last_touch:
+                self._handle_touch(*self._last_touch)
+            else:
+                self.mqtt.publish_status("error", "No previous touch")
+
         else:
             logger.warning("Unknown command: %s", cmd)
 

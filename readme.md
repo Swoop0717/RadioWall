@@ -27,7 +27,7 @@ A framed physical world map (paper or cloth) with a transparent capacitive touch
 │   │                          │    │                            │     │
 │   │                    ┌─────┴────┴─────┐                      │     │
 │   │                    │  Now Playing:  │                      │     │
-│   │                    │  Radio Wien 📻 │                      │     │
+│   │                    │  Radio Wien    │                      │     │
 │   │                    │  Vienna, AT    │                      │     │
 │   │                    └────────────────┘                      │     │
 │   │                                                            │     │
@@ -38,8 +38,9 @@ A framed physical world map (paper or cloth) with a transparent capacitive touch
                               ▼
                     ┌─────────────────┐
                     │   Home Server   │
-                    │   (N100/Pi)     │
+                    │   (Docker)      │
                     │                 │
+                    │ - Mosquitto     │
                     │ - Radio.garden  │
                     │ - UPnP control  │
                     └─────────────────┘
@@ -51,6 +52,84 @@ A framed physical world map (paper or cloth) with a transparent capacitive touch
                     └─────────────────┘
 ```
 
+## Quick Start
+
+### Server (Docker)
+
+The server runs via Docker Compose — no host packages needed.
+
+```bash
+git clone https://github.com/Swoop0717/RadioWall.git
+cd RadioWall
+
+# Create config
+cp server/config.example.yaml server/config.yaml
+# Edit server/config.yaml if needed (defaults work for local setup)
+
+# Start
+docker compose up -d
+
+# Check logs
+docker compose logs -f
+```
+
+### Test it
+
+```bash
+# Simulate a touch on Seoul, South Korea
+docker exec radiowall-mosquitto-1 mosquitto_pub -t "radiowall/touch" -m '{"x":873,"y":175}'
+
+# Skip to next station
+docker exec radiowall-mosquitto-1 mosquitto_pub -t "radiowall/command" -m '{"cmd":"next"}'
+
+# Stop playback
+docker exec radiowall-mosquitto-1 mosquitto_pub -t "radiowall/command" -m '{"cmd":"stop"}'
+```
+
+### ESP32 Firmware (PlatformIO)
+
+```bash
+cd esp32
+cp src/config.example.h src/config.h
+# Edit src/config.h with WiFi credentials and MQTT server IP
+
+pio run -t upload        # Build and flash
+pio device monitor       # Serial monitor
+```
+
+---
+
+## MQTT Protocol
+
+### Topics
+
+| Topic | Direction | Payload |
+|-------|-----------|---------|
+| `radiowall/touch` | ESP32 → Server | `{"x": 512, "y": 300, "ts": 1234567890}` |
+| `radiowall/nowplaying` | Server → ESP32 | `{"station": "Radio Wien", "location": "Vienna, Austria", "country": "AT"}` |
+| `radiowall/status` | Server → ESP32 | `{"state": "playing"}` or `{"state": "stopped"}` or `{"state": "loading"}` or `{"state": "error", "msg": "..."}` |
+| `radiowall/command` | ESP32 → Server | `{"cmd": "stop"}` or `{"cmd": "next"}` or `{"cmd": "replay"}` |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `stop` | Stop playback on the speaker |
+| `next` | Skip to the next station in the same area (skips dead streams) |
+| `replay` | Re-touch the same location (fresh random selection from nearby stations) |
+
+### Stream Selection
+
+When a touch event is received, the server:
+1. Converts pixel coordinates to lat/long
+2. Finds the ~20 nearest radio stations via Radio.garden
+3. Shuffles them (in `random` mode) or orders by distance/popularity
+4. Tries each station in order, checking if the stream is alive
+5. Sends the first working stream to the UPnP speaker
+6. The `next` command continues from where it left off in the list
+
+---
+
 ## Hardware
 
 ### Current Development Setup
@@ -59,8 +138,8 @@ A framed physical world map (paper or cloth) with a transparent capacitive touch
 | Touch Panel | 9" Capacitive (XY-PG9020) | Touch input for map |
 | USB Controller | Included with panel | Converts touch to USB HID |
 | ESP32 | LILYGO T-Display-S3-Long | Touch processing + "Now Playing" display |
-| Dev Server | Desktop PC / Raspberry Pi 3B+ | API + streaming during development |
-| Speaker | WiiM Amp Pro | Audio output via UPnP |
+| Server | Any Linux box with Docker | API + streaming (N100, Raspberry Pi, etc.) |
+| Speaker | WiiM Amp Pro | Audio output via UPnP/DLNA |
 
 ### Required Adapters (Ordered)
 | Item | Purpose |
@@ -74,187 +153,54 @@ A framed physical world map (paper or cloth) with a transparent capacitive touch
 - **Frame**: Custom frame with glass front
 - **LiPo Battery**: For cordless operation (2000-3500mAh recommended)
 
-## Power Consumption
-
-### Estimated Current Draw
-| Component | Active | Idle (display dimmed) |
-|-----------|--------|----------------------|
-| ESP32-S3 (WiFi, modem sleep) | ~80-120mA | ~20-50mA |
-| AMOLED Display | ~20-40mA | ~5mA |
-| Touch USB Controller | ~10-20mA | ~10mA |
-| **Total** | **~110-180mA** | **~35-65mA** |
-
-### Battery Life Estimates
-| Battery Capacity | Active Use | Mostly Idle |
-|------------------|------------|-------------|
-| 1000mAh | ~6-9 hours | ~15-28 hours |
-| 2000mAh | ~12-18 hours | ~1-2 days |
-| 3500mAh | ~20-32 hours | ~2-4 days |
-
-**Recommendation**: 2000-3500mAh LiPo for 1-4 days cordless operation.
-
 ---
 
-## Development Plan
+## Server Configuration
 
-### Phase 0: Hardware Verification ⏳
-*Goal: Confirm all hardware works before writing code*
+Copy `server/config.example.yaml` to `server/config.yaml`:
 
-**On Desktop PC:**
-- [ ] Assemble touch panel + USB controller
-- [ ] Plug into PC, verify it appears as HID device
-- [ ] Test touch → cursor movement works
-- [ ] Note the touch resolution/coordinate range
+```yaml
+# MQTT Broker
+mqtt:
+  host: "localhost"          # Use "localhost" with Docker host networking
+  port: 1883
 
-**On Raspberry Pi 3B+:**
-- [ ] Flash Raspberry Pi OS Lite
-- [ ] Connect touch panel via USB
-- [ ] Verify touch events with `evtest` or `libinput debug-events`
-- [ ] Test audio output (HDMI/aux or UPnP to WiiM)
+# Radio.garden API
+radio_garden:
+  n_stations: 20             # How many nearby stations to consider
+  selection_mode: "random"   # "random", "nearest", or "popular"
 
-**On ESP32-S3-Long (once adapters arrive):**
-- [ ] Flash test firmware, verify display works
-- [ ] Test USB Host mode with touch panel
-- [ ] Verify WiFi connectivity
+# Touch panel calibration
+calibration:
+  touch_min_x: 0
+  touch_max_x: 1024         # Verify with your panel
+  touch_min_y: 0
+  touch_max_y: 600           # Verify with your panel
+  map_north: 90              # Adjust if map is cropped
+  map_south: -90
+  map_west: -180
+  map_east: 180
 
----
-
-### Phase 1: Server Application 🖥️
-*Goal: Working radio selection + streaming on server*
-
-**Develop on Desktop, deploy to Pi/N100**
-
+# UPnP/DLNA Speaker
+upnp:
+  device_name: null          # null = auto-discover first renderer
+  discovery_timeout: 5
+  default_volume: null       # null = leave unchanged
 ```
-server/
-├── radio_garden.py      # API client
-├── coordinates.py       # X/Y → Lat/Long conversion  
-├── upnp_streamer.py     # UPnP/DLNA control
-├── mqtt_handler.py      # Receive touch events from ESP32
-├── main.py              # Orchestration
-└── config.yaml          # Settings
-```
-
-**Tasks:**
-- [ ] Radio.garden API client (fetch places, find nearest, get stream URL)
-- [ ] Coordinate conversion (pixel → lat/long, with calibration)
-- [ ] UPnP discovery and playback control for WiiM
-- [ ] MQTT broker setup (can use Mosquitto)
-- [ ] MQTT listener for touch events
-- [ ] Integration: touch event → find station → play on WiiM
-
-**Test without ESP32:**
-```bash
-# Simulate touch event
-mosquitto_pub -t "radiowall/touch" -m '{"x": 500, "y": 300}'
-# Should trigger radio playback on WiiM
-```
-
----
-
-### Phase 2: ESP32 Firmware 📟
-*Goal: ESP32 reads touch, sends to server, shows "Now Playing"*
-
-```
-esp32/
-├── src/
-│   ├── main.cpp
-│   ├── usb_host.cpp      # Read USB HID touch events
-│   ├── wifi_manager.cpp  # WiFi connection
-│   ├── mqtt_client.cpp   # Send touch, receive now-playing
-│   └── display.cpp       # Show station info on AMOLED
-├── platformio.ini
-└── config.h
-```
-
-**Tasks:**
-- [ ] USB Host mode setup for touch panel
-- [ ] Parse HID touch reports → X/Y coordinates
-- [ ] WiFi connection with reconnection logic
-- [ ] MQTT client: publish touch events
-- [ ] MQTT client: subscribe to now-playing updates
-- [ ] Display: show station name, location, maybe album art?
-- [ ] Power management: dim display when idle
-
-**MQTT Topics:**
-```
-radiowall/touch        → ESP32 publishes: {"x": 500, "y": 300}
-radiowall/nowplaying   → Server publishes: {"station": "Radio Wien", "location": "Vienna, Austria"}
-radiowall/status       → Server publishes: {"state": "playing"} or {"state": "stopped"}
-```
-
----
-
-### Phase 3: Integration & Calibration 🔧
-*Goal: Everything works together*
-
-- [ ] Calibration tool: touch corners of map, calculate transform
-- [ ] Save calibration to ESP32 flash / server config
-- [ ] Handle edge cases: ocean touches, no stations nearby
-- [ ] Error handling: WiFi disconnect, server offline, stream fails
-
----
-
-### Phase 4: Production Hardware 🖼️
-*Goal: Beautiful wall-mounted installation*
-
-- [ ] Source/print large equirectangular map
-- [ ] Order appropriately sized PCAP touch foil
-- [ ] Design and build frame
-- [ ] Integrate all electronics
-- [ ] Final calibration
-- [ ] Add LiPo battery + charging circuit
-
----
-
-### Phase 5: Polish ✨
-*Goal: Nice-to-have features*
-
-- [ ] Multiple station selection (when many nearby)
-- [ ] Volume control via touch gesture (swipe up/down?)
-- [ ] Visual feedback: LED strip around frame?
-- [ ] Sleep mode: turn off after X minutes idle
-- [ ] Web dashboard for configuration
-- [ ] OTA updates for ESP32
-
----
-
-## Software Architecture
-
-### Communication Flow
-```
-┌─────────────┐     MQTT: radiowall/touch      ┌─────────────┐
-│   ESP32     │ ────────────────────────────►  │   Server    │
-│             │                                │             │
-│  USB Touch  │     MQTT: radiowall/nowplaying │ Radio.garden│
-│  Display    │ ◄──────────────────────────────│ UPnP Control│
-└─────────────┘                                └─────────────┘
-                                                      │
-                                                      │ UPnP
-                                                      ▼
-                                               ┌─────────────┐
-                                               │  WiiM Amp   │
-                                               └─────────────┘
-```
-
-### Why This Split?
-- **ESP32**: Fast touch response, low power, small form factor, built-in display
-- **Server**: Heavy lifting (API calls, UPnP), always-on, easy to update
-- **MQTT**: Lightweight, real-time, perfect for IoT
 
 ---
 
 ## Radio.garden API
 
-Radio.garden doesn't have an official public API, but these endpoints work:
+Unofficial API (no auth required):
 
 ```bash
-# Get all places with radio stations
+# Get all places with radio stations (~12,500 places)
 curl http://radio.garden/api/ara/content/places
 
-# Response format:
-# { "data": { "list": [
-#   { "id": "...", "title": "Vienna", "country": "Austria", 
-#     "geo": [16.37, 48.21], "size": 42 },  # Note: [longitude, latitude]!
+# Response: {"data": {"list": [
+#   {"id": "IgQ9XxkV", "title": "Vienna", "country": "Austria",
+#    "geo": [16.37, 48.21], "size": 102},  # Note: [longitude, latitude]!
 # ]}}
 
 # Get stations at a place
@@ -270,117 +216,79 @@ curl -L http://radio.garden/api/ara/content/listen/{station_id}/channel.mp3
 
 ## Coordinate Conversion
 
-### Equirectangular Projection (Plate Carrée)
-
-For a standard world map, conversion from pixel to geographic coordinates is linear:
+The map uses equirectangular projection (Plate Carrée). Conversion from touch pixels to geographic coordinates is linear:
 
 ```python
-def pixel_to_latlong(x, y, width, height):
-    """Convert pixel coordinates to latitude/longitude.
-    
-    Assumes full world map: -180 to +180 longitude, +90 to -90 latitude
-    """
-    longitude = (x / width) * 360 - 180    # -180 to +180
-    latitude = 90 - (y / height) * 180     # +90 to -90
-    return latitude, longitude
+longitude = (x / touch_width) * 360 - 180   # -180 to +180
+latitude = 90 - (y / touch_height) * 180    # +90 to -90
 ```
 
-### Calibration
+Touch resolution is determined by the panel's controller chip, not its physical size. A 9" and 55" panel with the same controller report the same coordinate range. Calibrate by touching corners and reading raw values with `evtest` or the ESP32 serial output.
 
-Real installations need calibration for:
-- Touch area offset from map edges
-- Non-standard map bounds (cropped maps)
-- Rotation if mounted at an angle
+---
 
-```yaml
-# config.yaml
-calibration:
-  # Touch panel reports coordinates in this range
-  touch_min_x: 0
-  touch_max_x: 1024
-  touch_min_y: 0
-  touch_max_y: 600
-  
-  # Map bounds in geographic coordinates
-  map_north: 90
-  map_south: -90
-  map_west: -180
-  map_east: 180
+## Project Structure
+
+```
+RadioWall/
+├── docker-compose.yml          # Docker Compose (Mosquitto + server)
+├── .dockerignore
+├── mosquitto/
+│   └── mosquitto.conf          # MQTT broker config
+├── server/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── config.example.yaml     # Configuration template
+│   ├── main.py                 # Orchestration + command handling
+│   ├── radio_garden.py         # Radio.garden API client + stream validation
+│   ├── coordinates.py          # Pixel → lat/long conversion
+│   ├── upnp_streamer.py        # UPnP/DLNA speaker discovery + playback
+│   └── mqtt_handler.py         # MQTT pub/sub
+├── esp32/
+│   ├── platformio.ini          # PlatformIO build config
+│   └── src/
+│       ├── config.example.h    # WiFi/MQTT config template
+│       ├── main.cpp            # Entry point
+│       ├── usb_touch.cpp/.h    # USB Host HID touch reading
+│       ├── mqtt_client.cpp/.h  # WiFi + MQTT client
+│       └── display.cpp/.h      # AMOLED display UI
+├── docs/
+│   └── hardware_testing.md     # Hardware verification guide
+└── playground.ipynb            # Original prototype (reference)
 ```
 
 ---
 
-## Development Environment Setup
+## Development Status
 
-### Server (Python)
-```bash
-# Clone repo
-git clone https://github.com/Swoop0717/RadioWall.git
-cd RadioWall
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 0: Hardware Testing | 🟡 Partial | Touch panel verified on PC, WiiM discovered |
+| Phase 1: Server | ✅ Done | Docker deployment, Radio.garden API, UPnP streaming, MQTT, stream validation, next/stop/replay commands |
+| Phase 2: ESP32 Firmware | 🔧 Skeleton | Code written, needs hardware testing + USB Host HID |
+| Phase 3: Integration | ⬜ Not started | End-to-end testing, calibration tool |
+| Phase 4: Production | ⬜ Not started | Large touch foil, frame, final installation |
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate   # Windows
+---
 
-# Install dependencies
-pip install -r requirements.txt
+## Power Consumption
 
-# Run server
-python -m server.main
-```
+| Component | Active | Idle (display dimmed) |
+|-----------|--------|----------------------|
+| ESP32-S3 (WiFi, modem sleep) | ~80-120mA | ~20-50mA |
+| AMOLED Display | ~20-40mA | ~5mA |
+| Touch USB Controller | ~10-20mA | ~10mA |
+| **Total** | **~110-180mA** | **~35-65mA** |
 
-### ESP32 (PlatformIO)
-```bash
-# Install PlatformIO CLI or use VS Code extension
-cd esp32
-
-# Build and upload
-pio run -t upload
-
-# Monitor serial output
-pio device monitor
-```
-
-### MQTT Broker (Mosquitto)
-```bash
-# Install on server (Debian/Ubuntu)
-sudo apt install mosquitto mosquitto-clients
-
-# Test
-mosquitto_sub -t "radiowall/#" -v  # Subscribe to all topics
-mosquitto_pub -t "radiowall/touch" -m '{"x":100,"y":200}'  # Publish test
-```
+With a 2000-3500mAh LiPo: ~1-4 days cordless operation.
 
 ---
 
 ## Hardware Resources
 
-### Touch Panels & Foils
-- [Pro Display PCAP Foils](https://prodisplay.com/touch-screens/interactive-overlays/pcap-touch-foil/) (UK, premium)
-- [Keetouch](https://keetouch.eu/) (EU)
-- AliExpress: Search "capacitive touch panel USB" (budget)
-
-### Maps (Equirectangular)
-- [NASA Blue Marble](https://visibleearth.nasa.gov/collection/1484/blue-marble)
-- [Natural Earth](https://www.naturalearthdata.com/)
-
-### LiPo Batteries
-- JST 1.25mm 2-pin connector (matches T-Display-S3-Long)
-- 3.7V, 2000-3500mAh recommended
-- **Do not exceed 4.2V!**
-
----
-
-## Project History
-
-This project started as a Python prototype using VLC and matplotlib (see `playground.ipynb`). The current architecture evolved to be headless and energy-efficient for permanent wall installation.
-
-Key decisions:
-- **No display on map** → Physical map is more beautiful and energy-efficient
-- **ESP32 over Raspberry Pi** → Lower power, instant-on, smaller footprint
-- **Server for heavy lifting** → Easier updates, handles API rate limits
-- **UPnP over local audio** → Flexible speaker placement, better audio quality
+- **Touch Panels**: [Pro Display PCAP Foils](https://prodisplay.com/touch-screens/interactive-overlays/pcap-touch-foil/) (UK), [Keetouch](https://keetouch.eu/) (EU), AliExpress "capacitive touch panel USB" (budget)
+- **Maps**: [NASA Blue Marble](https://visibleearth.nasa.gov/collection/1484/blue-marble), [Natural Earth](https://www.naturalearthdata.com/)
+- **LiPo Batteries**: JST 1.25mm 2-pin, 3.7V, 2000-3500mAh (**do not exceed 4.2V!**)
 
 ---
 
@@ -390,4 +298,4 @@ MIT
 
 ## Contributing
 
-PRs welcome! Check the Development Plan above for what needs work.
+PRs welcome! Check the Development Status table above for what needs work.
