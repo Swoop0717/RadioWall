@@ -1,0 +1,53 @@
+# RadioWall Server Configuration
+# Copy to config.yaml and adjust for your setup
+
+# MQTT Broker
+mqtt:
+  host: "localhost"
+  port: 1883
+  # username: ""  # Uncomment if authentication required
+  # password: ""
+  
+  # Topics
+  topics:
+    touch: "radiowall/touch"
+    nowplaying: "radiowall/nowplaying"
+    status: "radiowall/status"
+    command: "radiowall/command"
+
+# Radio.garden API
+radio_garden:
+  base_url: "http://radio.garden/api/ara/content"
+  cache_places_seconds: 3600  # Cache place list for 1 hour
+  n_stations: 20              # Consider this many nearest stations
+  selection_mode: "random"    # "random", "nearest", or "popular"
+
+# Touch calibration
+calibration:
+  # Touch input range (from your touch panel)
+  touch_min_x: 0
+  touch_max_x: 1024
+  touch_min_y: 0
+  touch_max_y: 600
+  
+  # Geographic bounds of your map
+  map_north: 90
+  map_south: -90
+  map_west: -180
+  map_east: 180
+
+# UPnP/DLNA Speaker
+upnp:
+  # Speaker name (null for auto-discover first available)
+  device_name: null  # e.g., "WiiM Amp Pro"
+  
+  # Discovery timeout in seconds
+  discovery_timeout: 5
+  
+  # Volume (0-100, null to leave unchanged)
+  default_volume: null
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: null     # Log to file (null for stdout only)

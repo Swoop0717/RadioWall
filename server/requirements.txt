@@ -8,6 +8,9 @@ geopy>=2.3.0              # Geographic distance calculations
 # Touch Input (Linux)
 evdev>=1.6.0              # USB HID event reading on Linux
 
+# MQTT
+paho-mqtt>=1.6.0          # MQTT client for touch event communication
+
 # UPnP/DLNA Streaming
 async-upnp-client>=0.38.0 # UPnP device discovery and control
 

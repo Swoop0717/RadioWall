@@ -1,0 +1,17 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    network_mode: host
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped
+
+  radiowall:
+    build:
+      context: ./server
+    network_mode: host
+    volumes:
+      - ./server/config.yaml:/app/config.yaml:ro
+    depends_on:
+      - mosquitto
+    restart: unless-stopped

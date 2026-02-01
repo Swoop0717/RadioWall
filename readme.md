@@ -4,147 +4,244 @@ An interactive world map that plays local radio stations when you touch a locati
 
 ## The Vision
 
-A framed physical world map (paper or cloth) with a transparent capacitive touch layer. Touch anywhere on the map, and a Raspberry Pi finds the nearest radio stations and streams them to your speakers via your home network.
+A framed physical world map (paper or cloth) with a transparent capacitive touch layer. Touch anywhere on the map, and an ESP32 sends coordinates to your home server, which finds the nearest radio stations and streams them to your speakers.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Picture Frame                        │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │            Glass + PCAP Touch Foil                │  │
-│  │              (touch surface)                      │  │
-│  ├───────────────────────────────────────────────────┤  │
-│  │                                                   │  │
-│  │         Physical Paper/Cloth World Map            │  │
-│  │            (equirectangular projection)           │  │
-│  │                                                   │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
-                         │ USB (touch input)
-                         ▼
-              ┌─────────────────────┐
-              │    Raspberry Pi     │
-              │  - Headless service │
-              │  - Touch → lat/long │
-              │  - Radio.garden API │
-              │  - UPnP streaming   │
-              └─────────────────────┘
-                         │ Network (UPnP/DLNA)
-                         ▼
-                   🔊 Network Speaker
-                   (e.g. WiiM Amp Pro)
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Picture Frame                                │
+│                                                                       │
+│   ┌────────────────────────────────────────────────────────────┐     │
+│   │                                                            │     │
+│   │         Physical Paper/Cloth World Map                     │     │
+│   │              (equirectangular projection)                  │     │
+│   │                                                            │     │
+│   │                    + Touch Panel Overlay                   │     │
+│   │                                                            │     │
+│   └────────────────────────────────────────────────────────────┘     │
+│                              │ USB                                    │
+│                              ▼                                        │
+│   ┌────────────────────────────────────────────────────────────┐     │
+│   │                                                            │     │
+│   │  Touch Controller ──► ESP32-S3-Long ◄── 5V Power           │     │
+│   │       (USB)              │    │         (via pins)         │     │
+│   │                          │    │                            │     │
+│   │                    ┌─────┴────┴─────┐                      │     │
+│   │                    │  Now Playing:  │                      │     │
+│   │                    │  Radio Wien 📻 │                      │     │
+│   │                    │  Vienna, AT    │                      │     │
+│   │                    └────────────────┘                      │     │
+│   │                                                            │     │
+│   └────────────────────────────────────────────────────────────┘     │
+│                                                                       │
+└──────────────────────────────────────────────────────────────────────┘
+                              │ WiFi / MQTT
+                              ▼
+                    ┌─────────────────┐
+                    │   Home Server   │
+                    │   (N100/Pi)     │
+                    │                 │
+                    │ - Radio.garden  │
+                    │ - UPnP control  │
+                    └─────────────────┘
+                              │ UPnP / DLNA
+                              ▼
+                    ┌─────────────────┐
+                    │   WiiM Amp Pro  │
+                    │       🔊        │
+                    └─────────────────┘
 ```
 
 ## Hardware
 
 ### Current Development Setup
-- Raspberry Pi (any model with WiFi + USB)
-- USB Touchscreen for testing (e.g., 10.1" HDMI + USB touch display)
-- Network speaker with UPnP/DLNA support (e.g., WiiM Amp Pro)
+| Component | Model | Purpose |
+|-----------|-------|---------|
+| Touch Panel | 9" Capacitive (XY-PG9020) | Touch input for map |
+| USB Controller | Included with panel | Converts touch to USB HID |
+| ESP32 | LILYGO T-Display-S3-Long | Touch processing + "Now Playing" display |
+| Dev Server | Desktop PC / Raspberry Pi 3B+ | API + streaming during development |
+| Speaker | WiiM Amp Pro | Audio output via UPnP |
 
-### Target Production Setup
-- **PCAP Touch Foil**: Transparent capacitive touch film (available 32"–180"+)
-  - Mounts behind glass, works through up to 20mm thickness
-  - USB HID output, plug-and-play on Linux
-  - Suppliers: CJTouch, Keetouch, Pro Display, various AliExpress vendors
-- **Physical Map**: Equirectangular projection (Plate Carrée) for linear coordinate conversion
-- **Frame**: Custom frame with glass front, map behind, touch foil between
-- **Raspberry Pi**: Hidden in frame or mounted behind
-- **Network Speaker**: Any UPnP/DLNA compatible speaker/amplifier
+### Required Adapters (Ordered)
+| Item | Purpose |
+|------|---------|
+| USB-C OTG adapter (USB-A F → USB-C M) | Connect touch USB to ESP32 |
+| USB-C breakout board | Power ESP32 via 5V pin while USB-C used for touch |
 
-### Why PCAP Touch Foil?
-- Works with a static image (no display needed!)
-- Can be mounted behind glass with your physical map
-- USB plug-and-play, appears as standard HID input device
-- Available in sizes up to 180" for full wall installations
-- ~90% transparency, invisible when installed
-- Works through glass up to 8-20mm depending on model
+### Target Production Setup (55"+)
+- **PCAP Touch Foil**: Large format capacitive touch film (32"–180"+)
+- **Physical Map**: Equirectangular projection print
+- **Frame**: Custom frame with glass front
+- **LiPo Battery**: For cordless operation (2000-3500mAh recommended)
+
+## Power Consumption
+
+### Estimated Current Draw
+| Component | Active | Idle (display dimmed) |
+|-----------|--------|----------------------|
+| ESP32-S3 (WiFi, modem sleep) | ~80-120mA | ~20-50mA |
+| AMOLED Display | ~20-40mA | ~5mA |
+| Touch USB Controller | ~10-20mA | ~10mA |
+| **Total** | **~110-180mA** | **~35-65mA** |
+
+### Battery Life Estimates
+| Battery Capacity | Active Use | Mostly Idle |
+|------------------|------------|-------------|
+| 1000mAh | ~6-9 hours | ~15-28 hours |
+| 2000mAh | ~12-18 hours | ~1-2 days |
+| 3500mAh | ~20-32 hours | ~2-4 days |
+
+**Recommendation**: 2000-3500mAh LiPo for 1-4 days cordless operation.
+
+---
+
+## Development Plan
+
+### Phase 0: Hardware Verification ⏳
+*Goal: Confirm all hardware works before writing code*
+
+**On Desktop PC:**
+- [ ] Assemble touch panel + USB controller
+- [ ] Plug into PC, verify it appears as HID device
+- [ ] Test touch → cursor movement works
+- [ ] Note the touch resolution/coordinate range
+
+**On Raspberry Pi 3B+:**
+- [ ] Flash Raspberry Pi OS Lite
+- [ ] Connect touch panel via USB
+- [ ] Verify touch events with `evtest` or `libinput debug-events`
+- [ ] Test audio output (HDMI/aux or UPnP to WiiM)
+
+**On ESP32-S3-Long (once adapters arrive):**
+- [ ] Flash test firmware, verify display works
+- [ ] Test USB Host mode with touch panel
+- [ ] Verify WiFi connectivity
+
+---
+
+### Phase 1: Server Application 🖥️
+*Goal: Working radio selection + streaming on server*
+
+**Develop on Desktop, deploy to Pi/N100**
+
+```
+server/
+├── radio_garden.py      # API client
+├── coordinates.py       # X/Y → Lat/Long conversion  
+├── upnp_streamer.py     # UPnP/DLNA control
+├── mqtt_handler.py      # Receive touch events from ESP32
+├── main.py              # Orchestration
+└── config.yaml          # Settings
+```
+
+**Tasks:**
+- [ ] Radio.garden API client (fetch places, find nearest, get stream URL)
+- [ ] Coordinate conversion (pixel → lat/long, with calibration)
+- [ ] UPnP discovery and playback control for WiiM
+- [ ] MQTT broker setup (can use Mosquitto)
+- [ ] MQTT listener for touch events
+- [ ] Integration: touch event → find station → play on WiiM
+
+**Test without ESP32:**
+```bash
+# Simulate touch event
+mosquitto_pub -t "radiowall/touch" -m '{"x": 500, "y": 300}'
+# Should trigger radio playback on WiiM
+```
+
+---
+
+### Phase 2: ESP32 Firmware 📟
+*Goal: ESP32 reads touch, sends to server, shows "Now Playing"*
+
+```
+esp32/
+├── src/
+│   ├── main.cpp
+│   ├── usb_host.cpp      # Read USB HID touch events
+│   ├── wifi_manager.cpp  # WiFi connection
+│   ├── mqtt_client.cpp   # Send touch, receive now-playing
+│   └── display.cpp       # Show station info on AMOLED
+├── platformio.ini
+└── config.h
+```
+
+**Tasks:**
+- [ ] USB Host mode setup for touch panel
+- [ ] Parse HID touch reports → X/Y coordinates
+- [ ] WiFi connection with reconnection logic
+- [ ] MQTT client: publish touch events
+- [ ] MQTT client: subscribe to now-playing updates
+- [ ] Display: show station name, location, maybe album art?
+- [ ] Power management: dim display when idle
+
+**MQTT Topics:**
+```
+radiowall/touch        → ESP32 publishes: {"x": 500, "y": 300}
+radiowall/nowplaying   → Server publishes: {"station": "Radio Wien", "location": "Vienna, Austria"}
+radiowall/status       → Server publishes: {"state": "playing"} or {"state": "stopped"}
+```
+
+---
+
+### Phase 3: Integration & Calibration 🔧
+*Goal: Everything works together*
+
+- [ ] Calibration tool: touch corners of map, calculate transform
+- [ ] Save calibration to ESP32 flash / server config
+- [ ] Handle edge cases: ocean touches, no stations nearby
+- [ ] Error handling: WiFi disconnect, server offline, stream fails
+
+---
+
+### Phase 4: Production Hardware 🖼️
+*Goal: Beautiful wall-mounted installation*
+
+- [ ] Source/print large equirectangular map
+- [ ] Order appropriately sized PCAP touch foil
+- [ ] Design and build frame
+- [ ] Integrate all electronics
+- [ ] Final calibration
+- [ ] Add LiPo battery + charging circuit
+
+---
+
+### Phase 5: Polish ✨
+*Goal: Nice-to-have features*
+
+- [ ] Multiple station selection (when many nearby)
+- [ ] Volume control via touch gesture (swipe up/down?)
+- [ ] Visual feedback: LED strip around frame?
+- [ ] Sleep mode: turn off after X minutes idle
+- [ ] Web dashboard for configuration
+- [ ] OTA updates for ESP32
+
+---
 
 ## Software Architecture
 
+### Communication Flow
 ```
-radiowall/
-├── src/
-│   ├── touch_input.py      # USB HID touch event reader
-│   ├── coordinates.py      # Touch X/Y → Lat/Long conversion
-│   ├── radio_garden.py     # Radio.garden API client
-│   ├── upnp_streamer.py    # UPnP/DLNA streaming to speakers
-│   └── main.py             # Main service orchestration
-├── config/
-│   └── config.yaml         # Calibration & settings
-├── tests/
-├── requirements.txt
-└── README.md
+┌─────────────┐     MQTT: radiowall/touch      ┌─────────────┐
+│   ESP32     │ ────────────────────────────►  │   Server    │
+│             │                                │             │
+│  USB Touch  │     MQTT: radiowall/nowplaying │ Radio.garden│
+│  Display    │ ◄──────────────────────────────│ UPnP Control│
+└─────────────┘                                └─────────────┘
+                                                      │
+                                                      │ UPnP
+                                                      ▼
+                                               ┌─────────────┐
+                                               │  WiiM Amp   │
+                                               └─────────────┘
 ```
 
-### Core Components
+### Why This Split?
+- **ESP32**: Fast touch response, low power, small form factor, built-in display
+- **Server**: Heavy lifting (API calls, UPnP), always-on, easy to update
+- **MQTT**: Lightweight, real-time, perfect for IoT
 
-1. **Touch Input** (`touch_input.py`)
-   - Reads USB HID events from touch foil/screen
-   - Emits touch coordinates (X, Y in pixels)
-   - Handles multi-touch (use first touch point)
-
-2. **Coordinate Conversion** (`coordinates.py`)
-   - Converts pixel X/Y to latitude/longitude
-   - For equirectangular projection: linear transformation
-   - Calibration support for different map sizes
-   
-   ```python
-   # Equirectangular projection conversion
-   longitude = (x / width) * 360 - 180    # -180 to +180
-   latitude = 90 - (y / height) * 180     # +90 to -90
-   ```
-
-3. **Radio.garden Client** (`radio_garden.py`)
-   - Fetches list of all places with radio stations
-   - Finds N nearest stations to given coordinates
-   - Gets stream URL for selected station
-   
-   ```
-   API Endpoints:
-   - GET /api/ara/content/places           → List of all places
-   - GET /api/ara/content/page/{id}/channels → Stations at a place  
-   - GET /api/ara/content/listen/{id}/channel.mp3 → Audio stream
-   ```
-
-4. **UPnP Streamer** (`upnp_streamer.py`)
-   - Discovers UPnP/DLNA renderers on network
-   - Sends radio stream URL to speaker
-   - Controls playback (play/stop/volume)
-
-5. **Main Service** (`main.py`)
-   - Orchestrates all components
-   - Runs as headless systemd service
-   - Handles configuration and calibration
-
-## Development Phases
-
-### Phase 1: Core Application ✅ → 🚧
-- [x] Radio.garden API integration (basic version in playground.ipynb)
-- [x] Find nearest stations to coordinates
-- [x] Get audio stream URL
-- [ ] Refactor into clean Python modules
-- [ ] USB HID touch input reader (Linux evdev)
-- [ ] Proper coordinate conversion with calibration
-- [ ] UPnP/DLNA streaming to network speakers
-
-### Phase 2: Raspberry Pi Deployment
-- [ ] Headless service setup
-- [ ] systemd service file
-- [ ] Auto-start on boot
-- [ ] WiFi configuration
-- [ ] Calibration tool/script
-
-### Phase 3: Hardware Integration
-- [ ] Test with USB touchscreen
-- [ ] Test with PCAP touch foil
-- [ ] Frame design and construction
-- [ ] Final calibration for production map
-
-### Phase 4: Polish & Features
-- [ ] Station selection when multiple nearby (audio feedback?)
-- [ ] Optional: ESP32 "now playing" display via MQTT
-- [ ] Optional: Physical volume knob
-- [ ] Optional: LED indicator for current region
+---
 
 ## Radio.garden API
 
@@ -154,123 +251,138 @@ Radio.garden doesn't have an official public API, but these endpoints work:
 # Get all places with radio stations
 curl http://radio.garden/api/ara/content/places
 
-# Response contains:
+# Response format:
 # { "data": { "list": [
 #   { "id": "...", "title": "Vienna", "country": "Austria", 
-#     "geo": [16.37, 48.21], "size": 42 },
-#   ...
+#     "geo": [16.37, 48.21], "size": 42 },  # Note: [longitude, latitude]!
 # ]}}
 
 # Get stations at a place
 curl http://radio.garden/api/ara/content/page/{place_id}/channels
 
-# Stream a station (returns audio/mpeg)
-curl http://radio.garden/api/ara/content/listen/{station_id}/channel.mp3
+# Stream a station (redirects to actual stream)
+curl -L http://radio.garden/api/ara/content/listen/{station_id}/channel.mp3
 ```
 
-**Note**: The `geo` field is `[longitude, latitude]` (not lat/long!)
+**Important**: The `geo` field is `[longitude, latitude]` (not lat/long!)
 
-## Coordinate Systems
+---
+
+## Coordinate Conversion
 
 ### Equirectangular Projection (Plate Carrée)
-The simplest map projection with linear coordinate conversion:
-- X axis = Longitude (-180° to +180°)
-- Y axis = Latitude (+90° to -90°, inverted because Y grows downward)
 
-For a map image of size `W × H`:
+For a standard world map, conversion from pixel to geographic coordinates is linear:
+
 ```python
-longitude = (x / W) * 360 - 180
-latitude = 90 - (y / H) * 180
+def pixel_to_latlong(x, y, width, height):
+    """Convert pixel coordinates to latitude/longitude.
+    
+    Assumes full world map: -180 to +180 longitude, +90 to -90 latitude
+    """
+    longitude = (x / width) * 360 - 180    # -180 to +180
+    latitude = 90 - (y / height) * 180     # +90 to -90
+    return latitude, longitude
 ```
 
 ### Calibration
-For physical installations, you may need to calibrate for:
-- Touch area offset from map edge
-- Touch area size vs actual map size
-- Map orientation (if rotated)
 
-Store calibration in `config/config.yaml`:
+Real installations need calibration for:
+- Touch area offset from map edges
+- Non-standard map bounds (cropped maps)
+- Rotation if mounted at an angle
+
 ```yaml
-touch:
-  device: "/dev/input/event0"  # or auto-detect
-  width: 1920
-  height: 1080
-
-map:
-  # Pixel coordinates of map corners on touch surface
-  top_left: [50, 30]
-  bottom_right: [1870, 1050]
+# config.yaml
+calibration:
+  # Touch panel reports coordinates in this range
+  touch_min_x: 0
+  touch_max_x: 1024
+  touch_min_y: 0
+  touch_max_y: 600
   
-  # Geographic bounds (for non-standard map crops)
-  lat_north: 90
-  lat_south: -90
-  lon_west: -180
-  lon_east: 180
-
-audio:
-  upnp_device: "WiiM Amp Pro"  # or auto-discover
-  n_stations: 20  # stations to consider for selection
-  
-selection:
-  mode: "random"  # or "nearest" or "popular"
+  # Map bounds in geographic coordinates
+  map_north: 90
+  map_south: -90
+  map_west: -180
+  map_east: 180
 ```
 
-## Installation
+---
 
-### Development (any Linux machine)
+## Development Environment Setup
+
+### Server (Python)
 ```bash
+# Clone repo
 git clone https://github.com/Swoop0717/RadioWall.git
 cd RadioWall
+
+# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate   # Windows
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Run server
+python -m server.main
 ```
 
-### Raspberry Pi Deployment
+### ESP32 (PlatformIO)
 ```bash
-# Install system dependencies
-sudo apt update
-sudo apt install python3-pip python3-venv python3-evdev
+# Install PlatformIO CLI or use VS Code extension
+cd esp32
 
-# Clone and setup
-git clone https://github.com/Swoop0717/RadioWall.git
-cd RadioWall
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# Build and upload
+pio run -t upload
 
-# Install as service
-sudo cp radiowall.service /etc/systemd/system/
-sudo systemctl enable radiowall
-sudo systemctl start radiowall
+# Monitor serial output
+pio device monitor
 ```
+
+### MQTT Broker (Mosquitto)
+```bash
+# Install on server (Debian/Ubuntu)
+sudo apt install mosquitto mosquitto-clients
+
+# Test
+mosquitto_sub -t "radiowall/#" -v  # Subscribe to all topics
+mosquitto_pub -t "radiowall/touch" -m '{"x":100,"y":200}'  # Publish test
+```
+
+---
 
 ## Hardware Resources
 
-### PCAP Touch Foils
-- [Pro Display Touch Foils](https://prodisplay.com/touch-screens/interactive-overlays/pcap-touch-foil/) (UK)
+### Touch Panels & Foils
+- [Pro Display PCAP Foils](https://prodisplay.com/touch-screens/interactive-overlays/pcap-touch-foil/) (UK, premium)
 - [Keetouch](https://keetouch.eu/) (EU)
-- [CJTouch](https://www.cjtouch.com/) (China/Global)
-- AliExpress: Search "capacitive touch foil USB" (budget option)
+- AliExpress: Search "capacitive touch panel USB" (budget)
 
-### Maps (Equirectangular Projection)
-- NASA Blue Marble: https://visibleearth.nasa.gov/collection/1484/blue-marble
-- Natural Earth: https://www.naturalearthdata.com/
-- Custom print services for large format
+### Maps (Equirectangular)
+- [NASA Blue Marble](https://visibleearth.nasa.gov/collection/1484/blue-marble)
+- [Natural Earth](https://www.naturalearthdata.com/)
 
-### Network Speakers with UPnP/DLNA
-- WiiM Amp / WiiM Pro
-- Sonos (via sonos-http-api)
-- Any DLNA-compatible speaker
+### LiPo Batteries
+- JST 1.25mm 2-pin connector (matches T-Display-S3-Long)
+- 3.7V, 2000-3500mAh recommended
+- **Do not exceed 4.2V!**
 
-## Legacy Notes
+---
 
-The original prototype (`playground.ipynb`) used:
-- VLC for local audio playback
-- matplotlib for displaying a map on screen
-- pynput for mouse click detection
+## Project History
 
-This worked but required a display. The new architecture is completely headless and uses network audio instead.
+This project started as a Python prototype using VLC and matplotlib (see `playground.ipynb`). The current architecture evolved to be headless and energy-efficient for permanent wall installation.
+
+Key decisions:
+- **No display on map** → Physical map is more beautiful and energy-efficient
+- **ESP32 over Raspberry Pi** → Lower power, instant-on, smaller footprint
+- **Server for heavy lifting** → Easier updates, handles API rate limits
+- **UPnP over local audio** → Flexible speaker placement, better audio quality
+
+---
 
 ## License
 
@@ -278,4 +390,4 @@ MIT
 
 ## Contributing
 
-PRs welcome! See Development Phases above for what needs work.
+PRs welcome! Check the Development Plan above for what needs work.
