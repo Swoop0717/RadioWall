@@ -15,8 +15,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
+# Note: lib/ only ignored for Python, not esp32/lib/
 parts/
 sdist/
 var/
@@ -48,3 +48,4 @@ logs/
 # Cache
 .cache/
 *.cache
+.claude/
