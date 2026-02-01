@@ -24,34 +24,83 @@
 
 #include "mqtt_client.h"
 #include "display.h"
+#include "ui_state.h"
+#include "button_handler.h"
+
+// ------------------------------------------------------------------
+// Global State
+// ------------------------------------------------------------------
+
+static UIState ui_state;
 
 // ------------------------------------------------------------------
 // Callbacks
 // ------------------------------------------------------------------
 
+// Legacy callback for backward compatibility
 static void on_touch(int x, int y) {
     display_wake();
     display_show_status("Loading...");
     mqtt_publish_touch(x, y);
 }
 
+// Map touch callback (new zone-based handling)
+static void on_map_touch(int server_x, int server_y) {
+    display_wake();
+    mqtt_publish_touch(server_x, server_y);
+    Serial.printf("[Main] Map touched: sending coordinates (%d, %d) to server\n", server_x, server_y);
+}
+
+// UI button callback (status bar buttons)
+static void on_ui_button(int button_id) {
+    display_wake();
+    if (button_id == 0) {
+        // STOP button
+        Serial.println("[Main] STOP button pressed");
+        mqtt_publish_command("stop");
+    } else if (button_id == 1) {
+        // NEXT button
+        Serial.println("[Main] NEXT button pressed");
+        mqtt_publish_command("next");
+    }
+}
+
+// Physical button callbacks
+static void on_slice_cycle() {
+    ui_state.cycle_slice();
+    MapSlice& slice = ui_state.get_current_slice();
+    Serial.printf("[Main] Slice cycled to: %s (%s)\n", slice.name, slice.label);
+    display_refresh_map_only(&ui_state);
+    display_update_status_bar(&ui_state);  // Update status bar to show new region
+    display_wake();
+}
+
+static void on_stop_button() {
+    Serial.println("[Main] Physical STOP button pressed");
+    mqtt_publish_command("stop");
+    display_wake();
+}
+
 static void on_nowplaying(const char* station, const char* location, const char* country) {
-    display_show_nowplaying(station, location, country);
+    // Update UI state
+    ui_state.set_playing(station, location);
+
+    // Update status bar only (keeps map visible)
+    display_update_status_bar(&ui_state);
+
+    Serial.printf("[Main] Now playing: %s - %s, %s\n", station, location, country);
 }
 
 static void on_status(const char* state, const char* msg) {
-    if (strcmp(state, "playing") == 0) {
-        display_show_status("Playing");
-    } else if (strcmp(state, "stopped") == 0) {
-        display_show_status("Stopped");
-    } else if (strcmp(state, "loading") == 0) {
-        display_show_status("Loading...");
+    if (strcmp(state, "stopped") == 0) {
+        ui_state.set_stopped();
+        display_update_status_bar(&ui_state);
+        Serial.println("[Main] Playback stopped");
     } else if (strcmp(state, "error") == 0) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "Error: %s", msg);
-        display_show_status(buf);
+        Serial.printf("[Main] Error from server: %s\n", msg);
+        // Keep current state, just log the error
     } else {
-        display_show_status(state);
+        Serial.printf("[Main] Status update: %s\n", state);
     }
 }
 
@@ -62,28 +111,54 @@ static void on_status(const char* state, const char* msg) {
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n=== RadioWall ===");
+    Serial.println("\n=== RadioWall - World Map Edition ===");
 
     // Initialize display first (visual feedback)
     display_init();
 
-    // Initialize WiFi + MQTT
+    // Show temporary connecting screen
     display_show_connecting();
+
+    // Initialize WiFi + MQTT
     mqtt_init();
     mqtt_set_nowplaying_callback(on_nowplaying);
     mqtt_set_status_callback(on_status);
 
+    // Initialize physical buttons
+    button_init();
+    button_set_band_cycle_callback(on_slice_cycle);
+    button_set_stop_callback(on_stop_button);
+
     // Initialize touch input (built-in or USB, depending on config)
     touch_init();
-    touch_set_callback(on_touch);
+
+    #if USE_BUILTIN_TOUCH
+        // Use new zone-based touch callbacks for built-in touch
+        builtin_touch_set_map_callback(on_map_touch);
+        builtin_touch_set_ui_button_callback(on_ui_button);
+        builtin_touch_set_ui_state(&ui_state);
+        Serial.println("[Main] Built-in touch: zone-based callbacks configured");
+    #else
+        // Use legacy callback for USB touch (no zones)
+        touch_set_callback(on_touch);
+        Serial.println("[Main] USB touch: legacy callback configured");
+    #endif
+
+    // Show map view
+    delay(500);  // Brief pause to let WiFi/MQTT start connecting
+    display_show_map_view(&ui_state);
 
     // Ready
-    display_show_status(mqtt_is_connected() ? "Ready" : "MQTT disconnected");
-    Serial.println("[Main] Setup complete");
+    Serial.printf("[Main] Setup complete - MQTT %s\n",
+                  mqtt_is_connected() ? "connected" : "connecting...");
+    Serial.printf("[Main] Current slice: %s (%s)\n",
+                  ui_state.get_current_slice().name,
+                  ui_state.get_current_slice().label);
 }
 
 void loop() {
     mqtt_loop();
     touch_task();
+    button_task();
     display_loop();
 }

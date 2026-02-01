@@ -9,6 +9,8 @@
 #include "config.h"
 #include "pins_config.h"
 #include "Arduino_GFX_Library.h"
+#include "ui_state.h"
+#include "world_map.h"
 
 #define LCD_CS TFT_QSPI_CS
 #define LCD_SCLK TFT_QSPI_SCK
@@ -49,6 +51,8 @@ void display_init() {
         LCD_SDIO1 /* SDIO1 */, LCD_SDIO2 /* SDIO2 */, LCD_SDIO3 /* SDIO3 */);
 
     // Create AXS15231 display driver
+    // Rotation 0 = Portrait (180×640) - STABLE WORKING CONFIGURATION
+    // NOTE: Rotations 1 and 3 cause fading/crashing issues
     gfx = new Arduino_AXS15231(bus, LCD_RST /* RST */, 0 /* rotation */,
                                false /* IPS */, LCD_WIDTH, LCD_HEIGHT);
 
@@ -62,13 +66,13 @@ void display_init() {
         delay(3);
     }
 
-    // Show RadioWall splash
-    gfx->setCursor(40, 300);
+    // Show RadioWall splash (landscape coordinates: 640 wide × 180 tall)
+    gfx->setCursor(220, 60);
     gfx->setTextSize(2);
     gfx->setTextColor(CYAN);
     gfx->println("RadioWall");
 
-    gfx->setCursor(20, 330);
+    gfx->setCursor(120, 100);
     gfx->setTextSize(1);
     gfx->setTextColor(WHITE);
     gfx->println("Touch the world map to play radio");
@@ -153,7 +157,8 @@ void display_show_connecting() {
 
     if (gfx) {
         gfx->fillScreen(BLACK);
-        gfx->setCursor(40, 300);
+        // Landscape coordinates: 640 wide × 180 tall
+        gfx->setCursor(200, 80);
         gfx->setTextSize(2);
         gfx->setTextColor(YELLOW);
         gfx->println("Connecting...");
@@ -171,15 +176,155 @@ void display_wake() {
     }
 }
 
-void display_draw_touch_feedback(int x, int y) {
-    Serial.printf("[Display] Touch feedback: (%d, %d)\n", x, y);
+void display_draw_touch_feedback(int x, int y, UIState* state) {
+    if (!gfx || !state) return;
 
-    // Draw a small red circle at touch location
-    if (gfx && x >= 0 && x < LCD_WIDTH && y >= 0 && y < LCD_HEIGHT) {
-        gfx->fillCircle(x, y, 5, RED);
+    // Refresh the entire map to clear previous mark
+    display_refresh_map_only(state);
+
+    // Draw a small X marker at touch location
+    if (x >= 0 && x < LCD_WIDTH && y >= 0 && y < LCD_HEIGHT) {
+        int mark_size = 4;  // Half-size of the X
+        gfx->drawLine(x - mark_size, y - mark_size, x + mark_size, y + mark_size, RED);
+        gfx->drawLine(x - mark_size, y + mark_size, x + mark_size, y - mark_size, RED);
+        Serial.printf("[Display] Touch feedback X at (%d, %d)\n", x, y);
     }
 }
 
 Arduino_GFX* display_get_gfx() {
     return gfx;
+}
+
+// Map view functions
+
+/**
+ * Show full map view (map + status bar)
+ */
+void display_show_map_view(UIState* state) {
+    if (!gfx) {
+        Serial.println("[Display] ERROR: gfx is null!");
+        return;
+    }
+
+    Serial.println("[Display] Showing portrait map view (180×640)...");
+
+    // Clear screen
+    gfx->fillScreen(BLACK);
+
+    // Portrait mode: 180 wide × 640 tall
+    // Map area: 180×580 (0-580), Status bar: 180×60 (580-640)
+
+    // === MAP AREA (0 to 580) - Full height ===
+    // Map fills entire top area
+    int map_x = 10;
+    int map_y = 10;
+    int map_w = 160;
+    int map_h = 560;  // Almost full height (leaving small margins)
+
+    gfx->fillRect(map_x, map_y, map_w, map_h, 0x0020);  // Dark blue
+    gfx->drawRect(map_x-1, map_y-1, map_w+2, map_h+2, WHITE);
+
+    // "MAP" label in center
+    gfx->setTextSize(3);
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(map_x + 50, map_y + map_h/2 - 15);
+    gfx->println("MAP");
+
+    // === STATUS BAR (580 to 640) ===
+    display_update_status_bar(state);
+
+    Serial.println("[Display] Portrait view complete!");
+}
+
+/**
+ * Update status bar only (bottom 60px in portrait mode)
+ */
+void display_update_status_bar(UIState* state) {
+    if (!gfx) return;
+
+    // Portrait mode: 180 wide × 640 tall
+    const int STATUS_Y = 580;  // Status bar starts at y=580
+    const int STATUS_H = 60;    // Status bar height
+    const int STATUS_W = 180;   // Display width
+
+    // Clear status bar area
+    gfx->fillRect(0, STATUS_Y, STATUS_W, STATUS_H, BLACK);
+
+    gfx->setTextSize(1);
+
+    // Line 1: Always show region
+    MapSlice& slice = state->get_current_slice();
+    gfx->setTextColor(CYAN);
+    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->print("Region: ");
+    gfx->setTextColor(YELLOW);
+    gfx->println(slice.name);
+
+    // Line 2: Station info or prompt
+    if (state->get_is_playing()) {
+        // Combine station and location, truncate if needed
+        // Size 1 font: ~6px per char, 170px available = ~28 chars max
+        char combined[64];
+        snprintf(combined, sizeof(combined), "%s | %s",
+                 state->get_station_name(), state->get_location());
+
+        // Truncate if too long (28 chars for line 2, keep some margin)
+        if (strlen(combined) > 28) {
+            combined[25] = '.';
+            combined[26] = '.';
+            combined[27] = '.';
+            combined[28] = '\0';
+        }
+
+        gfx->setTextColor(WHITE);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(combined);
+    } else {
+        // Show tap prompt
+        gfx->setTextColor(WHITE);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->println("Tap map to play");
+    }
+
+    // Line 3: STOP and NEXT buttons (90px each)
+    // STOP button (left half: 0-89)
+    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);  // Dark blue
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(25, STATUS_Y + 43);
+    gfx->print("STOP");
+
+    // NEXT button (right half: 90-179)
+    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);  // Dark blue
+    gfx->setCursor(115, STATUS_Y + 43);
+    gfx->print("NEXT");
+}
+
+/**
+ * Refresh map area only (not status bar)
+ */
+void display_refresh_map_only(UIState* state) {
+    if (!gfx || !state) return;
+
+    Serial.println("[Display] Refreshing map area (portrait mode)...");
+
+    // Portrait mode: Clear map area only (0 to 580)
+    const int MAP_H = 580;
+    gfx->fillRect(0, 0, 180, MAP_H, BLACK);
+
+    // Redraw full-height map (same as display_show_map_view but without status bar)
+    int map_x = 10;
+    int map_y = 10;
+    int map_w = 160;
+    int map_h = 560;  // Almost full height
+
+    // Draw border
+    gfx->drawRect(map_x-1, map_y-1, map_w+2, map_h+2, WHITE);
+
+    // Get current slice and render bitmap
+    MapSlice& slice = state->get_current_slice();
+
+    // Draw the map slice bitmap at the correct position
+    draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, map_x, map_y);
+
+    Serial.println("[Display] Map refresh complete");
 }

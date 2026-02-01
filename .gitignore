@@ -49,3 +49,7 @@ logs/
 .cache/
 *.cache
 .claude/
+
+# Generated files
+tools/data/
+esp32/src/world_map_data.h

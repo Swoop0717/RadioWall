@@ -11,6 +11,7 @@
 #include "builtin_touch.h"
 #include "config.h"
 #include "display.h"
+#include "ui_state.h"
 #include "Arduino_DriveBus_Library.h"
 #include <Wire.h>
 
@@ -28,7 +29,14 @@
 // Touch read command (from working LILYGO example)
 static const uint8_t read_touchpad_cmd[] = {0xB5, 0xAB, 0xA5, 0x5A, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00};
 
+// Legacy callback
 static TouchCallback _touch_callback = nullptr;
+
+// Zone-based callbacks
+static MapTouchCallback _map_touch_callback = nullptr;
+static UIButtonCallback _ui_button_callback = nullptr;
+static UIState* _ui_state = nullptr;
+
 static unsigned long _last_touch_ms = 0;
 static bool _initialized = false;
 static volatile bool _touch_interrupt = false;
@@ -91,6 +99,18 @@ void builtin_touch_init() {
 
 void builtin_touch_set_callback(TouchCallback cb) {
     _touch_callback = cb;
+}
+
+void builtin_touch_set_map_callback(MapTouchCallback cb) {
+    _map_touch_callback = cb;
+}
+
+void builtin_touch_set_ui_button_callback(UIButtonCallback cb) {
+    _ui_button_callback = cb;
+}
+
+void builtin_touch_set_ui_state(UIState* state) {
+    _ui_state = state;
 }
 
 void builtin_touch_task() {
@@ -195,12 +215,92 @@ void builtin_touch_task() {
     Serial.printf("[Touch] Display (%d, %d) -> Map (%d, %d)\n",
                   touch_x, touch_y, map_x, map_y);
 
+    // Zone-based touch handling
+    // NOTE: Display is in landscape mode (640×180) with rotation 3 (270° clockwise)
+    // Map area: y < 150, Status bar: y >= 150
+
+    // Touch coordinates are in portrait mode (0-179 for x, 0-639 for y)
+    // Rotation 3 (270° CW / 90° CCW) transformation:
+    uint16_t landscape_x = LCD_HEIGHT - touch_y;  // Map 0-639 portrait height to 640-0 landscape width
+    // Portrait mode: 180×640 (width × height)
+    // Map area: 180×580 (top)
+    // Status bar: 180×60 (bottom)
+    uint16_t portrait_x = touch_x;  // 0-179
+    uint16_t portrait_y = touch_y;  // 0-639
+
+    const int MAP_AREA_HEIGHT = 580;
+
+    if (portrait_y < MAP_AREA_HEIGHT) {
+        // Map area touched - check if touch is inside the actual map rectangle
+        // Map rectangle bounds: x=[10,170], y=[10,570]
+        const int MAP_X_MIN = 10;
+        const int MAP_X_MAX = 170;
+        const int MAP_Y_MIN = 10;
+        const int MAP_Y_MAX = 570;
+
+        if (portrait_x >= MAP_X_MIN && portrait_x <= MAP_X_MAX &&
+            portrait_y >= MAP_Y_MIN && portrait_y <= MAP_Y_MAX) {
+
+            // Touch is inside map rectangle - translate coordinates
+            if (_ui_state && _map_touch_callback) {
+                MapSlice& slice = _ui_state->get_current_slice();
+
+                // Normalize coordinates to map bounds (0.0 to 1.0)
+                float norm_x = (portrait_x - MAP_X_MIN) / (float)(MAP_X_MAX - MAP_X_MIN);
+                float norm_y = (portrait_y - MAP_Y_MIN) / (float)(MAP_Y_MAX - MAP_Y_MIN);
+
+                // X (0-1) maps to full latitude range (-90° to 90°, south to north)
+                float lat = -90.0f + norm_x * 180.0f;
+
+                // Y (0-1) maps to longitude within current slice's range
+                float lon_range = slice.lon_max - slice.lon_min;
+                float lon = slice.lon_min + norm_y * lon_range;
+
+                // Handle wrapping for Pacific slice (150° to -150°)
+                if (lon > 180.0f) lon -= 360.0f;
+                if (lon < -180.0f) lon += 360.0f;
+
+                // Convert to server's 1024×600 equirectangular map space
+                int server_x = (int)((lon + 180.0f) / 360.0f * 1024.0f);
+                int server_y = (int)((90.0f - lat) / 180.0f * 600.0f);
+
+                // Clamp to valid range
+                if (server_x < 0) server_x = 0;
+                if (server_x > 1023) server_x = 1023;
+                if (server_y < 0) server_y = 0;
+                if (server_y > 599) server_y = 599;
+
+                Serial.printf("[Touch] Map: Portrait(%d,%d) -> Lat/Lon(%.2f,%.2f) -> Server(%d,%d)\n",
+                             portrait_x, portrait_y, lat, lon, server_x, server_y);
+
+                _map_touch_callback(server_x, server_y);
+            }
+        } else {
+            // Touch in map zone but outside map rectangle - ignore
+            Serial.printf("[Touch] Ignored: Outside map bounds (%d,%d)\n", portrait_x, portrait_y);
+        }
+    } else {
+        // Status bar touched - detect button regions (portrait: 180px wide)
+        // STOP button: x < 90 (left half), NEXT button: x >= 90 (right half)
+        if (_ui_button_callback) {
+            if (portrait_x < 90) {
+                Serial.println("[Touch] Status bar: STOP button");
+                _ui_button_callback(0);  // 0 = STOP
+            } else {
+                Serial.println("[Touch] Status bar: NEXT button");
+                _ui_button_callback(1);  // 1 = NEXT
+            }
+        }
+    }
+
     // Visual feedback (if enabled)
     #if TOUCH_VISUAL_FEEDBACK
-        display_draw_touch_feedback(touch_x, touch_y);
+        if (_ui_state) {
+            display_draw_touch_feedback(touch_x, touch_y, _ui_state);
+        }
     #endif
 
-    // Trigger callback
+    // Legacy callback for backward compatibility
     if (_touch_callback) {
         _touch_callback(map_x, map_y);
     }
