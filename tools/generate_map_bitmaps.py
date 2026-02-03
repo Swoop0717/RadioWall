@@ -89,42 +89,73 @@ def render_longitude_slice(coastlines: gpd.GeoDataFrame, lon_min: float, lon_max
         lon_max: Maximum longitude for this slice
 
     Returns:
-        Binary numpy array (160×560) where 1 = land, 0 = ocean
+        Binary numpy array (560×160) where 1 = land, 0 = ocean
     """
-    # Create figure with exact pixel dimensions
     dpi = 100
-    fig = plt.figure(figsize=(MAP_WIDTH / dpi, MAP_HEIGHT / dpi), dpi=dpi)
-    ax = fig.add_axes([0, 0, 1, 1])  # No margins
 
-    # Set map extent (slice longitude range, full latitude -90° to 90°)
-    # Handle wrapping for Pacific slice (150° to -150°)
     if lon_max < lon_min:
-        # Pacific slice wraps around: show 150° to 180° and -180° to -150°
-        # For now, just show 150° to 180° (partial view)
-        # TODO: Handle wrapping properly in future version
-        ax.set_xlim(lon_min, 180)
+        # Wrapping slice (e.g. Pacific: 150° to -150° via the dateline)
+        # Actual span in degrees going eastward
+        total_span = (lon_max + 360.0) - lon_min  # e.g. (-150+360) - 150 = 60°
+
+        # Left half: lon_min to 180° (e.g. 150° to 180°)
+        left_span = 180.0 - lon_min
+        # Right half: -180° to lon_max (e.g. -180° to -150°)
+        right_span = lon_max + 180.0
+
+        # Pixel widths proportional to their angular span
+        left_px = max(1, int(round(MAP_WIDTH * left_span / total_span)))
+        right_px = MAP_WIDTH - left_px
+
+        # Render left half (lon_min to 180°)
+        fig_l = plt.figure(figsize=(left_px / dpi, MAP_HEIGHT / dpi), dpi=dpi)
+        ax_l = fig_l.add_axes([0, 0, 1, 1])
+        ax_l.set_xlim(lon_min, 180)
+        ax_l.set_ylim(-90, 90)
+        ax_l.axis("off")
+        ax_l.set_facecolor("white")
+        coastlines.plot(ax=ax_l, color="black", linewidth=0.5)
+        buf_l = io.BytesIO()
+        plt.savefig(buf_l, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig_l)
+        buf_l.seek(0)
+        img_l = Image.open(buf_l).convert("L").resize((left_px, MAP_HEIGHT), Image.Resampling.LANCZOS)
+
+        # Render right half (-180° to lon_max)
+        fig_r = plt.figure(figsize=(right_px / dpi, MAP_HEIGHT / dpi), dpi=dpi)
+        ax_r = fig_r.add_axes([0, 0, 1, 1])
+        ax_r.set_xlim(-180, lon_max)
+        ax_r.set_ylim(-90, 90)
+        ax_r.axis("off")
+        ax_r.set_facecolor("white")
+        coastlines.plot(ax=ax_r, color="black", linewidth=0.5)
+        buf_r = io.BytesIO()
+        plt.savefig(buf_r, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig_r)
+        buf_r.seek(0)
+        img_r = Image.open(buf_r).convert("L").resize((right_px, MAP_HEIGHT), Image.Resampling.LANCZOS)
+
+        # Stitch left + right
+        img = Image.new("L", (MAP_WIDTH, MAP_HEIGHT), 255)
+        img.paste(img_l, (0, 0))
+        img.paste(img_r, (left_px, 0))
     else:
+        # Normal non-wrapping slice
+        fig = plt.figure(figsize=(MAP_WIDTH / dpi, MAP_HEIGHT / dpi), dpi=dpi)
+        ax = fig.add_axes([0, 0, 1, 1])
         ax.set_xlim(lon_min, lon_max)
+        ax.set_ylim(-90, 90)
+        ax.axis("off")
+        ax.set_facecolor("white")
+        coastlines.plot(ax=ax, color="black", linewidth=0.5)
 
-    ax.set_ylim(-90, 90)  # Full latitude range (south to north)
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
 
-    # Hide axes
-    ax.axis("off")
-
-    # Draw coastlines (black lines on white background)
-    ax.set_facecolor("white")  # Ocean = white (will become 0)
-    coastlines.plot(ax=ax, color="black", linewidth=0.5)  # Land = black (will become 1)
-
-    # Render to bitmap
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0)
-    plt.close(fig)
-
-    buf.seek(0)
-    img = Image.open(buf).convert("L")  # Grayscale
-
-    # Resize to exact dimensions (in case of rounding errors)
-    img = img.resize((MAP_WIDTH, MAP_HEIGHT), Image.Resampling.LANCZOS)
+        buf.seek(0)
+        img = Image.open(buf).convert("L")
+        img = img.resize((MAP_WIDTH, MAP_HEIGHT), Image.Resampling.LANCZOS)
 
     # Convert to binary array (threshold at 128)
     bitmap = np.array(img)
