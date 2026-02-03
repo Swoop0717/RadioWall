@@ -27,32 +27,37 @@ A framed **physical world map** (paper or cloth) with an **invisible capacitive 
 │   │                    └─────────────────┘                     │     │
 │   └────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────┘
-                              │ WiFi / MQTT
-                              ▼
-                    ┌─────────────────┐         ┌─────────────────┐
-                    │   Home Server   │ ──────► │   WiiM Amp Pro  │
-                    │   (Docker)      │  UPnP   │       🔊        │
-                    └─────────────────┘         └─────────────────┘
+                              │ WiFi (standalone - no server!)
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+    ┌─────────────────┐             ┌─────────────────┐
+    │  Radio.garden   │             │   WiiM Speaker  │
+    │  (stations API) │             │  (LinkPlay API) │
+    └─────────────────┘             └─────────────────┘
 ```
 
 ---
 
-## Current State: Prototype 1
+## Current State: Standalone Mode ✅
 
-> **Prototype 1** uses the ESP32's built-in touchscreen as a temporary stand-in for the external touch panel. This lets us test the full stack while waiting for USB adapters.
+> **Fully working!** ESP32 operates completely standalone — no server required. Touch map → find city → fetch Radio.garden stations → play on WiiM.
 
-### What Works Now (Prototype 1)
+### What Works Now
 
-- ✅ **Server**: Docker deployment, Radio.garden API, UPnP streaming to WiiM
-- ✅ **ESP32 Display**: World map with coastlines, 4 longitude slices
-- ✅ **ESP32 Touch**: Built-in touchscreen with zone detection
-- ✅ **End-to-End**: Touch map → MQTT → Server → Radio plays on speaker
+- ✅ **Standalone Operation**: No server needed! ESP32 does everything directly
+- ✅ **Places Database**: 12,486 cities loaded from LittleFS (~634KB)
+- ✅ **Radio.garden Client**: HTTPS API, JSON parsing, station caching
+- ✅ **LinkPlay Client**: WiiM control via HTTPS (port 443)
+- ✅ **Multi-Action Button**: Short press (region), long press (stop), double-tap (next)
+- ✅ **Touch Controls**: Map touch, STOP/NEXT buttons in status bar
+- ✅ **Optimized Rendering**: drawFastHLine for faster map display (~4s)
 
-### What's Next (Prototype 2 → Final)
+### What's Next
 
 - 📦 **Waiting for**: USB-C OTG adapter + breakout board (ordered)
 - 🔧 **TODO**: USB Host HID for external 9" touch panel
-- 🔧 **TODO**: Simplify ESP32 display to "Now Playing" only (no map needed with physical map)
+- 🔧 **TODO**: Display layout improvements (text wrapping fixes)
 - 🎯 **Final**: Large PCAP touch foil (55"+), physical map, custom frame
 
 ---
@@ -125,7 +130,7 @@ pio device monitor
 
 ## Development Roadmap
 
-### ✅ Phase 1: Server
+### ✅ Phase 1: Server (Complete)
 - [x] Docker Compose deployment (Mosquitto + Python server)
 - [x] Radio.garden API client with place caching
 - [x] Stream validation (skip dead streams)
@@ -133,7 +138,7 @@ pio device monitor
 - [x] MQTT handler with stop/next/replay commands
 - [x] Coordinate conversion (pixel → lat/lon)
 
-### ✅ Phase 2: Prototype 1 (Built-in Touch)
+### ✅ Phase 2: Prototype 1 - Built-in Touch (Complete)
 - [x] ESP32 display driver (Arduino_GFX + AXS15231)
 - [x] Built-in touchscreen (I2C interrupt-driven)
 - [x] WiFi + MQTT client with auto-reconnect
@@ -142,19 +147,20 @@ pio device monitor
 - [x] Zone-based touch (map area vs status bar)
 - [x] End-to-end flow working
 
-### 🔧 Phase 3: Prototype 2 (External Touch Panel)
+### ✅ Phase 3: Standalone Mode (Complete - No Server!)
+- [x] Places database compiler (12,486 cities → 634KB LittleFS)
+- [x] ESP32 Radio.garden API client (`radio_client.cpp`)
+- [x] LinkPlay client for WiiM (`linkplay_client.cpp`) — simpler than UPnP!
+- [x] Direct touch → lookup → play flow (no MQTT needed)
+- [x] Multi-action button (short/long/double-tap)
+- [x] Optimized map rendering with drawFastHLine
+
+### 🔧 Phase 4: Prototype 2 (External Touch Panel)
 - [ ] USB-C OTG adapter testing
 - [ ] USB Host HID implementation for touch panel
 - [ ] Calibration tool (touch corners → save config)
 - [ ] Test with 9" touch panel over physical map printout
 - [ ] Simplify ESP32 display to "Now Playing" only
-
-### 🔧 Phase 4: Standalone Mode (No Server)
-- [ ] Pre-compile Radio.garden places database (~500KB binary for flash)
-- [ ] ESP32 Radio.garden API client (`radio_client.cpp`)
-- [ ] ESP32 UPnP client for WiiM (`upnp_client.cpp`)
-- [ ] Remove MQTT dependency, direct touch → lookup → play flow
-- [ ] Auto-discover WiiM on network (or configure IP)
 
 ### ⬜ Phase 5: Production
 - [ ] Large PCAP touch foil (55"+)
@@ -165,9 +171,48 @@ pio device monitor
 
 ---
 
-## Target Architecture: Standalone ESP32
+## Future Features
 
-The final product requires **no server** — just ESP32 + WiiM Mini + WiFi:
+### Short-term (Software improvements)
+
+| Feature | Description |
+|---------|-------------|
+| **Favorites** | Save/export favorite stations to LittleFS |
+| **History** | Track recently played stations with replay |
+| **Distance Display** | Show "Vienna (243 km)" - distance to current city |
+| **Dynamic Search** | Auto-jump to next nearest city when stations exhausted |
+| **Station Count** | Show "(2/5)" progress on display |
+| **Display Overhaul** | Fix text wrapping, better layout |
+| **Volume Control** | Adjust WiiM volume via touch/serial |
+| **Pause/Resume** | Toggle playback without stopping |
+| **Equalizer** | WiiM EQ presets (classic, jazz, vocal, etc.) |
+| **Sleep Timer** | Auto-stop after X minutes |
+| **WiiM Presets** | Trigger saved TuneIn/Spotify presets |
+| **Device Discovery** | Auto-find WiiM on network (SSDP/mDNS) |
+| **Debug Display** | Show serial logs on screen |
+
+### Medium-term
+
+| Feature | Description |
+|---------|-------------|
+| **Regional Zoom** | High-detail maps for Europe, East Asia, NE US |
+| **Multiroom** | Control multiple WiiM speakers as group |
+| **Web Config** | ESP32-hosted config page (no serial needed) |
+
+### Long-term
+
+| Feature | Description |
+|---------|-------------|
+| **UPnP/DLNA** | Support non-WiiM speakers |
+| **Bluetooth** | Direct BT audio output from ESP32 |
+
+See [CLAUDE.md](CLAUDE.md) for detailed implementation notes on each feature.
+
+---
+
+## Architecture: Standalone ESP32 ✅
+
+**Implemented!** No server required — just ESP32 + WiiM + WiFi:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -180,9 +225,9 @@ The final product requires **no server** — just ESP32 + WiiM Mini + WiFi:
 │  │                     ESP32-S3                          │  │
 │  │                                                       │  │
 │  │  1. Touch → lat/lon                                   │  │
-│  │  2. Lookup nearest places (from flash)                │  │
+│  │  2. Lookup nearest city (12,486 in LittleFS)          │  │
 │  │  3. Fetch stations from Radio.garden API              │  │
-│  │  4. Send stream URL to WiiM via UPnP                  │  │
+│  │  4. Send stream URL to WiiM via LinkPlay HTTPS        │  │
 │  │                                                       │  │
 │  │                 ┌─────────────────┐                   │  │
 │  │                 │  Now Playing    │                   │  │
@@ -202,17 +247,18 @@ The final product requires **no server** — just ESP32 + WiiM Mini + WiFi:
 ```
 
 **How it works:**
-1. ESP32 has ~12,500 Radio.garden places pre-compiled in flash (~500KB)
-2. Touch → find nearest places → fetch stations from Radio.garden API
-3. ESP32 sends stream URL to WiiM via UPnP SOAP command
+1. ESP32 has 12,486 Radio.garden places in LittleFS (~634KB)
+2. Touch → find nearest city → fetch stations from Radio.garden API
+3. ESP32 sends stream URL to WiiM via **LinkPlay HTTPS API** (simpler than UPnP!)
 4. WiiM fetches and plays the stream directly from the internet
 
-**New components needed:**
+**Key files:**
 | File | Purpose |
 |------|---------|
-| `tools/compile_places.py` | Download places, output `places.bin` |
-| `esp32/src/radio_client.cpp` | Places lookup + Radio.garden API |
-| `esp32/src/upnp_client.cpp` | UPnP/DLNA control for WiiM |
+| `tools/compile_places.py` | Download places → `places.bin` |
+| `esp32/src/places_db.cpp` | Load places, nearest-city lookup |
+| `esp32/src/radio_client.cpp` | Radio.garden API client |
+| `esp32/src/linkplay_client.cpp` | WiiM control via LinkPlay HTTPS |
 
 ---
 

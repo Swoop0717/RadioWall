@@ -10,7 +10,7 @@ RadioWall is an interactive physical world map that plays local radio stations w
 
 **Current State**: **ESP32 Standalone Mode** — fully working end-to-end without server. Touch map → find city → fetch Radio.garden stations → stream to WiiM via LinkPlay.
 
-## Architecture
+## Architecture (Standalone - No Server Required)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -28,35 +28,47 @@ RadioWall is an interactive physical world map that plays local radio stations w
 │  │                         └─────────────────┘               │  │
 │  └───────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
-                              │ WiFi + MQTT
-                              ▼
-                    ┌─────────────────┐
-                    │  Home Server    │  Docker on N100
-                    │  - Mosquitto    │
-                    │  - Radio.garden │
-                    │  - UPnP control │
-                    └─────────────────┘
-                              │ UPnP/DLNA
-                              ▼
-                    ┌─────────────────┐
-                    │  WiiM Amp Pro   │
-                    └─────────────────┘
+                              │ WiFi (direct)
+                              │
+              ┌───────────────┴───────────────┐
+              │                               │
+              ▼                               ▼
+    ┌─────────────────┐             ┌─────────────────┐
+    │  Radio.garden   │             │  WiiM Speaker   │
+    │  (stations API) │             │  (LinkPlay API) │
+    └─────────────────┘             └─────────────────┘
 ```
 
-## Current Status: Prototype 1
+**Data Flow**: Touch → ESP32 finds nearest city → fetches stations from Radio.garden → gets stream URL → sends to WiiM via LinkPlay HTTPS API
 
-> **Prototype 1** uses the ESP32's built-in touchscreen + world map display as a temporary stand-in for the external touch panel + physical map. This lets us test the full stack while waiting for USB adapters.
+## Current Status: Prototype 1 (Fully Working)
+
+> **Prototype 1** uses the ESP32's built-in touchscreen + world map display as a temporary stand-in for the external touch panel + physical map. **Fully functional end-to-end.**
 
 | Component | Status |
 |-----------|--------|
-| ESP32 Display | ✅ Working (Arduino_GFX + AXS15231) |
+| ESP32 Display | ✅ Working (Arduino_GFX + AXS15231 AMOLED) |
 | ESP32 Built-in Touch | ✅ Working (I2C interrupt-driven) |
 | Places Database | ✅ 12,486 cities loaded from LittleFS |
-| Radio.garden Client | ✅ HTTPS, JSON parsing working |
-| LinkPlay Client | ✅ WiiM control via HTTPS |
+| Radio.garden Client | ✅ HTTPS, JSON parsing, station caching |
+| LinkPlay Client | ✅ WiiM control via HTTPS (port 443) |
+| Physical Button | ✅ Multi-action: short/long/double-tap |
+| Touch Buttons | ✅ STOP and NEXT in status bar |
+| Map Rendering | ✅ Optimized with drawFastHLine (~4s) |
 | End-to-End Flow | ✅ Touch → Places → Radio.garden → WiiM |
-| Server (Docker) | ⏸️ Optional, not needed for standalone |
+| Server (Docker) | ⏸️ Not needed (standalone mode) |
 | USB Touch Panel | 🔧 Skeleton, waiting for OTG adapter |
+
+### User Controls
+
+| Input | Action |
+|-------|--------|
+| Touch map | Play radio from nearest city |
+| Touch STOP button | Stop playback |
+| Touch NEXT button | Play next station at same city |
+| Button short press | Cycle map region (Americas/Europe/Asia/Pacific) |
+| Button long press (>800ms) | Stop playback |
+| Button double-tap (<400ms) | Next station |
 
 ### TODO: Prototype 2 (External Touch Panel)
 
@@ -67,48 +79,28 @@ RadioWall is an interactive physical world map that plays local radio stations w
 - [ ] Simplify ESP32 display to "Now Playing" only (remove map rendering)
 - [ ] Add `USE_BUILTIN_TOUCH 0` mode that skips map UI
 
-### TODO: Standalone Mode (No Server)
+### ✅ COMPLETED: Standalone Mode (No Server)
 
-The final product needs no server — just ESP32 + WiiM Mini + WiFi.
+The ESP32 now works completely standalone — no server required!
 
-**New files to create:**
+**Implemented files:**
 | File | Purpose |
 |------|---------|
-| `tools/compile_places.py` | Download Radio.garden places → `places.bin` (~500KB) |
-| `esp32/src/radio_client.cpp` | Load places from flash, find nearest, call Radio.garden API |
-| `esp32/src/upnp_client.cpp` | UPnP/DLNA SOAP commands to control WiiM |
+| `tools/compile_places.py` | ✅ Downloads Radio.garden places → `places.bin` (634KB) |
+| `esp32/src/radio_client.cpp` | ✅ Radio.garden API client, station caching |
+| `esp32/src/linkplay_client.cpp` | ✅ WiiM control via LinkPlay HTTPS API |
+| `esp32/src/places_db.cpp` | ✅ Load places from LittleFS, nearest-city lookup |
 
-**Tasks:**
-- [ ] Create places compiler tool (Python)
-- [ ] Implement ESP32 Radio.garden client (HTTPS, JSON parsing)
-- [ ] Implement ESP32 UPnP client (SSDP discovery, SOAP Play/Stop)
-- [ ] Add `#define STANDALONE_MODE` to switch between MQTT and standalone
-- [ ] Store WiiM IP in config or auto-discover via SSDP
-- [ ] Remove MQTT dependency in standalone mode
+**Completed tasks:**
+- [x] Create places compiler tool (Python)
+- [x] Implement ESP32 Radio.garden client (HTTPS, JSON parsing)
+- [x] Implement LinkPlay client (simpler than UPnP, HTTPS on port 443)
+- [x] Store WiiM IP in config.h (`WIIM_IP`)
+- [x] Remove MQTT dependency (standalone is default)
+- [x] Multi-action button support (short/long/double-tap)
+- [x] Optimized map rendering with drawFastHLine()
 
-**Data structures for places.bin:**
-```cpp
-struct Place {
-    char id[12];        // Radio.garden place ID
-    int16_t lat_x100;   // Latitude × 100 (e.g., 48.21° → 4821)
-    int16_t lon_x100;   // Longitude × 100
-    char name[32];      // City name
-    char country[3];    // Country code
-};
-// ~50 bytes × 12,500 places = ~625KB
-```
-
-**UPnP flow:**
-```cpp
-// 1. Discover WiiM (or use configured IP)
-String wiim_ip = ssdp_discover("urn:schemas-upnp-org:device:MediaRenderer:1");
-
-// 2. Send stream URL
-upnp_set_uri(wiim_ip, stream_url, "Radio Wien - Vienna");
-
-// 3. Play
-upnp_play(wiim_ip);
-```
+**Note:** We use LinkPlay HTTP API instead of UPnP — simpler and works great with WiiM devices.
 
 ### TODO: Production (Phase 5)
 
@@ -121,26 +113,31 @@ upnp_play(wiim_ip);
 
 ---
 
-## Target Architecture: Standalone ESP32
+## ✅ Standalone Architecture (Implemented)
 
-The final product requires **no server** — ESP32 handles everything:
+The ESP32 handles everything — no server required:
 
 ```
 Touch Panel → ESP32-S3 → WiFi → Radio.garden API
                 ↓                     ↓
          [Now Playing]           Stream URL
                                       ↓
-                              UPnP → WiiM Mini 🔊
+                            LinkPlay → WiiM 🔊
 ```
 
-**Why this works:**
-- ESP32 tells WiiM "play this URL" via UPnP
-- WiiM fetches the audio stream directly from the internet
-- ESP32 just coordinates — no audio processing needed
+**How it works:**
+1. Touch map → ESP32 finds nearest city in places database
+2. ESP32 fetches station list from Radio.garden API
+3. ESP32 gets stream URL (follows redirect)
+4. ESP32 sends stream URL to WiiM via LinkPlay HTTPS API
+5. WiiM fetches audio stream directly from internet
+6. ESP32 just coordinates — no audio processing needed
 
 ---
 
-## Server (Python)
+## Server (Python) - Optional
+
+> **Note:** The server is no longer required. ESP32 standalone mode handles everything directly. The server code remains for reference or alternative deployment.
 
 ### Files
 
@@ -193,28 +190,40 @@ mosquitto_pub -t "radiowall/command" -m '{"cmd":"stop"}'
 | `display.cpp/h` | AMOLED rendering (Arduino_GFX) |
 | `builtin_touch.cpp/h` | Built-in touchscreen (I2C, interrupt-driven) |
 | `usb_touch.cpp/h` | USB HID touch panel (skeleton) |
-| `mqtt_client.cpp/h` | WiFi + MQTT with auto-reconnect |
+| `radio_client.cpp/h` | Radio.garden API client, station caching |
+| `linkplay_client.cpp/h` | WiiM control via LinkPlay HTTPS API |
+| `places_db.cpp/h` | Places database from LittleFS |
 | `ui_state.cpp/h` | Slice selection, playback state |
-| `world_map.cpp/h` | RLE bitmap decompression and drawing |
-| `button_handler.cpp/h` | Physical button debouncing |
+| `world_map.cpp/h` | RLE bitmap decompression and optimized drawing |
+| `button_handler.cpp/h` | Multi-action button (short/long/double-tap) |
 | `pins_config.h` | Hardware pin definitions |
-| `config.h` | WiFi, MQTT settings (git-ignored) |
+| `config.h` | WiFi, WiiM IP settings (git-ignored) |
 
 ### Building
 
 ```bash
 cd esp32
 cp src/config.example.h src/config.h
-# Edit config.h with WiFi/MQTT settings
+# Edit config.h:
+#   - WIFI_SSID, WIFI_PASSWORD
+#   - WIIM_IP (find in WiiM app or router)
 
-pio run -t upload
-pio device monitor
+pio run -t upload      # Upload firmware
+pio run -t uploadfs    # Upload places.bin to LittleFS
+pio device monitor     # Watch serial output
 ```
 
 ### Serial Commands (Testing)
 
 ```
-T:512,300    # Simulate touch at (512, 300) in server coordinates
+T:512,300       # Simulate touch at (512, 300) in server coordinates
+W:192.168.1.50  # Set WiiM IP address
+P:<url>         # Play stream URL directly
+S               # Stop playback
+V:50            # Set volume to 50%
+?               # Get WiiM status
+L:48.21,16.37   # Lookup nearest place to coordinates
+D:10            # Dump first 10 places from database
 ```
 
 ---
@@ -301,16 +310,16 @@ Zone Detection
   ├─ y < 580 → Map Area
   │     │
   │     ▼
-  │   Normalize to map bounds (10-170, 10-570)
+  │   Normalize to map bounds
   │     │
   │     ▼
   │   Convert to lat/lon using current slice
   │     │
   │     ▼
-  │   Convert to server coords (1024×600)
+  │   radio_play_at_location(lat, lon)
   │     │
   │     ▼
-  │   MQTT publish to radiowall/touch
+  │   Find nearest city → Fetch stations → Play via WiiM
   │
   └─ y >= 580 → Status Bar
         │
@@ -318,7 +327,7 @@ Zone Detection
       Button detection (x < 90 = STOP, else NEXT)
         │
         ▼
-      MQTT publish to radiowall/command
+      radio_stop() or radio_play_next()
 ```
 
 ### Coordinate Conversion Code
@@ -359,7 +368,9 @@ Calibration will handle any offset/scale differences between the touch panel and
 
 ---
 
-## MQTT Protocol
+## MQTT Protocol (Legacy - Not Used in Standalone Mode)
+
+> **Note:** MQTT is only used if connecting to the optional Docker server. Standalone mode (default) doesn't use MQTT.
 
 ### Topics
 
@@ -400,8 +411,17 @@ Calibration will handle any offset/scale differences between the touch panel and
 
 | Button | GPIO | Notes |
 |--------|------|-------|
-| Button 1 | 0 | Cycle longitude slice |
+| Button 1 | 0 | Multi-action (see below) |
 | Button 2 | 21 | ⚠️ DISABLED - conflicts with TFT_QSPI_D2 |
+
+**Button 1 Multi-Action Support:**
+| Action | Timing | Function |
+|--------|--------|----------|
+| Short press | <800ms | Cycle map region |
+| Long press | >800ms hold | STOP playback |
+| Double-tap | <400ms between presses | NEXT station |
+
+**Toggle Switch:** The physical toggle switch on the T-Display-S3-Long board is a **battery power switch**, not a GPIO input. It disconnects/connects battery power.
 
 ---
 
@@ -680,3 +700,456 @@ monitor_echo = yes
 
 - `send_on_enter`: Press Enter to send the line
 - `monitor_echo`: See what you're typing
+
+### Map Rendering Optimization
+
+Map rendering uses `drawFastHLine()` instead of `drawPixel()` for better performance:
+
+```cpp
+// OLD - slow (~10+ seconds)
+gfx->drawPixel(x, y, color);
+
+// NEW - faster (~4 seconds)
+gfx->drawFastHLine(x, y, width, color);
+```
+
+The RLE-compressed map data is decoded into horizontal line segments, reducing SPI transactions from ~90,000 to ~10,000.
+
+**Note:** For truly instant rendering (<100ms), would need PSRAM framebuffer (~209KB for 180×580×16bit). Current performance is acceptable for region changes.
+
+### Station Count Behavior
+
+When pressing NEXT, the station cycles through available stations at the current city:
+
+- `[Radio] Playing: Station Name (1/5)` → 5 stations available, currently on #1
+- `[Radio] Playing: Station Name (2/5)` → Moved to station #2
+- `[Radio] Only 1 station available` → NEXT will replay the same station
+
+Many small cities have only 1 station in Radio.garden. This is expected behavior.
+
+---
+
+## Future Features
+
+### Planned Features (Short-term)
+
+#### 1. Favorite Stations / Export
+
+Save stations for quick access later:
+
+- **Favorites list**: Touch-and-hold on NEXT button to save current station
+- **Favorites menu**: Long-press region button to show saved stations
+- **Storage**: LittleFS JSON file (`/favorites.json`)
+- **Export**: Serial command to dump favorites as JSON
+- **Implementation**: `favorites.cpp/h` with circular buffer of ~20 stations
+
+```cpp
+struct FavoriteStation {
+    char station_id[16];
+    char title[48];
+    char place[32];
+    char country[3];
+};
+```
+
+#### 2. Playback History with Replay
+
+Track recently played stations for quick replay:
+
+- **History buffer**: Last 10-20 stations in RAM
+- **UI access**: Touch gesture (swipe down?) or long-press combo
+- **Serial command**: `H` to dump history, `H:3` to replay #3
+- **Persistence**: Optional save to LittleFS on stop
+
+#### 3. Enhanced Playback Info (LinkPlay getPlayerStatus)
+
+Display more info from WiiM using `getPlayerStatus` API:
+
+| Field | Description |
+|-------|-------------|
+| `Title` | Current track/stream title |
+| `Artist` | Artist name (if available) |
+| `Album` | Album name (if available) |
+| `status` | play/pause/stop/loading |
+| `vol` | Current volume (0-100) |
+| `mute` | Mute state (0/1) |
+| `mode` | Playback mode (see below) |
+| `type` | Source type |
+
+**Playback modes:**
+- `10` = Network stream (HTTP)
+- `31` = Spotify Connect
+- `40` = Line In
+- `41` = Bluetooth
+- `43` = Optical
+- `99` = DLNA/UPnP
+
+**Implementation:**
+```cpp
+// Poll every 5 seconds when playing
+String status = linkplay_get("/httpapi.asp?command=getPlayerStatus");
+// Parse JSON: {"status":"play","vol":"50","Title":"Radio Wien",...}
+```
+
+#### 4. Volume Control
+
+Add volume control via LinkPlay:
+
+- **Serial**: `V:50` (set volume), `V:+10` (relative)
+- **Touch**: Long-press on map area for volume slider?
+- **API**: `setPlayerCmd:vol:50`
+
+```cpp
+bool linkplay_set_volume(int vol) {
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "/httpapi.asp?command=setPlayerCmd:vol:%d", vol);
+    return linkplay_get(cmd).length() > 0;
+}
+```
+
+#### 5. Pause/Resume
+
+Add pause/resume support:
+
+- **Touch**: Tap status bar to toggle pause/play
+- **API**: `setPlayerCmd:pause` / `setPlayerCmd:resume`
+- **Note**: Only works during active playback, not for stopped state
+
+#### 6. Debug Log Display
+
+Show serial-style logs on the ESP32 display:
+
+- **Toggle**: Triple-tap or special button combo
+- **Content**: Last N lines from Serial buffer
+- **Use case**: Debugging without laptop connected
+- **Implementation**: Ring buffer capturing Serial.printf() output
+
+#### 7. Network Scan for WiiM Devices
+
+Auto-discover WiiM devices on the network:
+
+- **SSDP**: Search for `urn:schemas-upnp-org:device:MediaRenderer:1`
+- **mDNS**: Look for `_linkplay._tcp` service
+- **UI**: Show list of found devices on first boot / config menu
+- **Storage**: Save selected device IP to NVS/LittleFS
+
+```cpp
+// SSDP discovery (simplified)
+WiFiUDP udp;
+udp.beginPacket("239.255.255.250", 1900);
+udp.print("M-SEARCH * HTTP/1.1\r\n"
+          "HOST: 239.255.255.250:1900\r\n"
+          "MAN: \"ssdp:discover\"\r\n"
+          "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n");
+udp.endPacket();
+// Parse responses for WiiM devices
+```
+
+#### 8. Distance Display
+
+Show how far you are from the current station's city:
+
+- **Display**: "Vienna, AT (243 km)" in status bar
+- **Calculation**: Haversine distance from touch point to city center
+- **Update**: Recalculate on each new touch or city change
+- **Implementation**: Already have lat/lon for both points
+
+```cpp
+// Haversine formula for distance between two points
+float haversine_km(float lat1, float lon1, float lat2, float lon2) {
+    const float R = 6371.0f;  // Earth radius in km
+    float dlat = radians(lat2 - lat1);
+    float dlon = radians(lon2 - lon1);
+    float a = sin(dlat/2) * sin(dlat/2) +
+              cos(radians(lat1)) * cos(radians(lat2)) *
+              sin(dlon/2) * sin(dlon/2);
+    float c = 2 * atan2(sqrt(a), sqrt(1-a));
+    return R * c;
+}
+
+// Store touch coordinates for distance calculation
+static float _touch_lat, _touch_lon;
+```
+
+#### 9. Dynamic Search (Smart Station Cycling)
+
+Smarter than fixed radius - cycles through nearby cities automatically:
+
+**Current behavior:**
+- Touch → find nearest city → play all its stations → NEXT wraps to station 1
+
+**New behavior:**
+- Touch → find nearest city → play all its stations
+- When stations exhausted → automatically find NEXT nearest city → play its stations
+- Continues outward until user touches a new location
+
+**Implementation:**
+```cpp
+// Cache multiple nearby cities, not just one
+static const int MAX_NEARBY_CITIES = 10;
+static Place _nearby_cities[MAX_NEARBY_CITIES];
+static float _nearby_distances[MAX_NEARBY_CITIES];
+static int _num_nearby_cities = 0;
+static int _current_city_index = 0;
+
+bool radio_play_next() {
+    // Try next station at current city
+    if (_current_station_index < _total_stations - 1) {
+        _current_station_index++;
+        return play_current_station();
+    }
+
+    // No more stations at this city - try next city
+    if (_current_city_index < _num_nearby_cities - 1) {
+        _current_city_index++;
+        fetch_stations_for_city(_nearby_cities[_current_city_index]);
+        _current_station_index = 0;
+        return play_current_station();
+    }
+
+    // Exhausted all nearby cities
+    Serial.println("[Radio] No more cities nearby");
+    return false;
+}
+```
+
+**UI feedback:**
+- "Vienna (2/5) • 243km" → playing station 2 of 5 in Vienna
+- "→ Bratislava (1/3) • 65km" → moved to next city automatically
+- Serial: `[Radio] Moving to next city: Bratislava (65km)`
+
+#### 10. Station Count Display
+
+Show how many stations were found at current location:
+
+- **Status bar**: "Vienna (5 stations)" or "Vienna (1 station)"
+- **Serial**: Already logs `[Radio] 5 stations available`
+- **On NEXT**: Show "(2/5)" indicator - already implemented in logs
+- **Implementation**: Add station count to UIState, display in status bar
+
+#### 11. Display Layout Overhaul
+
+Fix text wrapping and improve information display:
+
+**Current Problems:**
+- Long station names wrap badly or overflow
+- City + country can exceed width
+- Status bar cramped with buttons
+
+**Proposed Layout (180×640 portrait):**
+```
+┌──────────────────┐  (0,0)
+│ ┌──────────────┐ │
+│ │              │ │  Map Area: 160×520 (reduced)
+│ │  Map Bitmap  │ │  Position: (10, 10)
+│ │              │ │
+│ └──────────────┘ │
+├──────────────────┤  y=540
+│ ♫ Station Name   │  Line 1: Station (truncate with ...)
+│ 📍 City, Country │  Line 2: Location
+│ (2/5) advancement|  Line 3: Progress + region
+│ [STOP]    [NEXT] │  Line 4: Buttons
+└──────────────────┘  (180,640)
+```
+
+**Text handling:**
+```cpp
+// Truncate long strings with ellipsis
+String truncate(const String& str, int max_chars) {
+    if (str.length() <= max_chars) return str;
+    return str.substring(0, max_chars - 3) + "...";
+}
+
+// Use monospace font for consistent width calculation
+// Or measure text width with gfx->getTextBounds()
+```
+
+**Implementation:**
+- Reduce map height from 560 to 520 pixels
+- Add dedicated lines for each piece of info
+- Use `gfx->setTextWrap(false)` to prevent ugly wrapping
+- Truncate strings to fit display width
+- Show station index "(2/5)" on screen, not just serial
+
+#### 12. Equalizer Control
+
+WiiM supports built-in equalizer presets:
+
+- **Presets**: off, classic, popular, jazzy, vocal
+- **Serial**: `E:classic` or `E:0` (off), `E:1` (classic), etc.
+- **API**: `setPlayerCmd:equalizer:<mode>`
+- **UI**: Could add to long-press menu
+
+```cpp
+bool linkplay_set_equalizer(const char* mode) {
+    // mode: "off", "classic", "popular", "jazzy", "vocal"
+    String cmd = "setPlayerCmd:equalizer:" + String(mode);
+    return make_request(cmd.c_str()).length() > 0;
+}
+```
+
+#### 13. Sleep Timer
+
+Auto-stop playback after duration:
+
+- **Serial**: `SLEEP:30` (30 minutes), `SLEEP:0` (cancel)
+- **API**: `setSleepTimer:<seconds>`, `getSleepTimer`
+- **UI**: Touch gesture or menu option
+- **Display**: Show remaining time when active
+
+```cpp
+bool linkplay_set_sleep_timer(int minutes) {
+    char cmd[48];
+    snprintf(cmd, sizeof(cmd), "setSleepTimer:%d", minutes * 60);
+    return make_request(cmd).length() > 0;
+}
+
+int linkplay_get_sleep_timer() {
+    String response = make_request("getSleepTimer");
+    return response.toInt() / 60;  // Returns seconds, convert to minutes
+}
+```
+
+#### 14. WiiM Hardware Presets
+
+Trigger WiiM's saved presets (configured via WiiM app):
+
+- **Presets**: 1-6 hardware buttons on WiiM devices
+- **Serial**: `PRESET:1` through `PRESET:6`
+- **API**: `MCUKeyShortClick:<num>` (0-5 for presets 1-6)
+- **Use case**: Quick access to favorite TuneIn/Spotify stations saved on WiiM
+
+```cpp
+bool linkplay_trigger_preset(int preset_num) {
+    // preset_num: 1-6 (maps to MCU key 0-5)
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "MCUKeyShortClick:%d", preset_num - 1);
+    return make_request(cmd).length() > 0;
+}
+```
+
+#### 15. Notification/Prompt Sounds
+
+Play short audio notifications without interrupting main stream:
+
+- **API**: `playPromptUrl:<url>`
+- **Use case**: Play a "ding" sound when station changes
+- **Note**: Requires hosting the sound file somewhere accessible
+
+### Planned Features (Medium-term)
+
+#### 16. Closeup Regional Maps
+
+High-detail maps for radio-dense regions:
+
+| Region | Coverage | Why |
+|--------|----------|-----|
+| Europe | -10° to 40° lon, 35° to 70° lat | Highest radio density |
+| East Asia | 100° to 150° lon, 20° to 50° lat | Japan, Korea, China |
+| Northeast US | -85° to -65° lon, 35° to 48° lat | Dense metro areas |
+
+- **Gesture**: Double-tap on region to zoom in
+- **Storage**: Additional bitmap per region (~5KB each)
+- **Navigation**: Swipe to pan, button to zoom out
+
+#### 17. Multiroom Support (LinkPlay)
+
+Control multiple WiiM devices as a group:
+
+- **API commands**:
+  - `multiroom:getSlaveList` - Get paired speakers
+  - `multiroom:SlaveKickout:<ip>` - Remove from group
+  - `multiroom:SlaveVolume:<ip>:<vol>` - Per-speaker volume
+- **UI**: Select which rooms to play to
+- **Use case**: Whole-house radio
+
+### Future Features (Long-term)
+
+#### 18. UPnP/DLNA Streaming (Alternative to LinkPlay)
+
+For non-WiiM speakers, implement standard UPnP:
+
+```cpp
+// SOAP request to SetAVTransportURI
+String soap =
+  "<?xml version=\"1.0\"?>"
+  "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+  "<s:Body><u:SetAVTransportURI xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">"
+  "<InstanceID>0</InstanceID>"
+  "<CurrentURI>" + stream_url + "</CurrentURI>"
+  "</u:SetAVTransportURI></s:Body></s:Envelope>";
+```
+
+- **Benefit**: Works with any DLNA speaker
+- **Complexity**: More verbose than LinkPlay, requires SSDP discovery
+- **Priority**: Low (LinkPlay works great for WiiM)
+
+#### 19. Bluetooth Audio Output
+
+Play directly from ESP32 via Bluetooth A2DP:
+
+- **Library**: ESP32-A2DP
+- **Use case**: No WiFi speaker needed, use any BT speaker/headphones
+- **Challenge**: ESP32 must decode audio stream (CPU intensive)
+- **Alternative**: Some BT speakers accept URL via app - could send URL instead
+
+#### 20. Web Configuration Interface
+
+ESP32 hosts config webpage:
+
+- **Features**: Set WiFi, WiiM IP, manage favorites, view history
+- **Access**: `http://<esp32-ip>/`
+- **Library**: ESPAsyncWebServer
+- **Benefit**: No serial connection needed for setup
+
+### LinkPlay API Reference
+
+Common commands for WiiM/LinkPlay devices:
+
+| Command | Description |
+|---------|-------------|
+| **Playback** | |
+| `getPlayerStatus` | Current playback status, volume, track info (JSON) |
+| `setPlayerCmd:play:<url>` | Play audio URL |
+| `setPlayerCmd:pause` | Pause playback |
+| `setPlayerCmd:resume` | Resume from pause |
+| `setPlayerCmd:onepause` | Toggle pause/resume |
+| `setPlayerCmd:stop` | Stop playback |
+| `setPlayerCmd:prev` | Previous track |
+| `setPlayerCmd:next` | Next track |
+| `setPlayerCmd:seek:<pos>` | Seek to position (seconds) |
+| **Volume & Audio** | |
+| `setPlayerCmd:vol:<0-100>` | Set volume |
+| `setPlayerCmd:mute:<0\|1>` | Mute/unmute |
+| `setPlayerCmd:equalizer:<mode>` | EQ: off/classic/popular/jazzy/vocal |
+| `getEqualizer` | Get current EQ mode |
+| **Playback Modes** | |
+| `setPlayerCmd:loopmode:<0-4>` | 0=sequence, 1=repeat-all, 2=repeat-one, 3=shuffle, 4=shuffle-repeat |
+| `setPlayerCmd:switchmode:<mode>` | Change audio source |
+| **Presets & Playlists** | |
+| `MCUKeyShortClick:<0-5>` | Trigger preset 1-6 |
+| `setPlayerCmd:playlist:<index>` | Play playlist by index |
+| `playPromptUrl:<url>` | Play notification sound |
+| **Timers** | |
+| `setSleepTimer:<seconds>` | Set auto-shutoff timer |
+| `getSleepTimer` | Get remaining sleep time |
+| **Device Info** | |
+| `getStatusEx` | Extended device status (JSON) |
+| `getStatus` | Device info, firmware, SSID |
+| `setDeviceName:<name>` | Rename device |
+| `reboot` | Restart device |
+| **Multiroom** | |
+| `multiroom:getSlaveList` | List grouped speakers |
+| `multiroom:SlaveKickout:<ip>` | Remove from group |
+| `multiroom:SlaveVolume:<ip>:<vol>` | Per-speaker volume |
+| `multiroom:SlaveMute:<ip>:<0\|1>` | Mute specific speaker |
+| `multiroom:Ungroup` | Disband group |
+| **USB/Local** | |
+| `getLocalPlayList` | List USB/SD files |
+| `setPlayerCmd:playLocalList:<idx>` | Play local file |
+
+**Base URL**: `https://<wiim-ip>/httpapi.asp?command=<cmd>`
+
+**Response format**: Plain text or JSON depending on command
+
+**Sources**: [AndersFluur/LinkPlayApi](https://github.com/AndersFluur/LinkPlayApi), [Arylic HTTP API](https://developer.arylic.com/httpapi/)
