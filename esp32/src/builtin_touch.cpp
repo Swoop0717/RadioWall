@@ -275,6 +275,11 @@ void builtin_touch_task() {
                              portrait_x, portrait_y, lat, lon, server_x, server_y);
 
                 _map_touch_callback(server_x, server_y);
+
+                // Visual feedback for map touches only (if enabled)
+                #if TOUCH_VISUAL_FEEDBACK
+                    display_draw_touch_feedback(touch_x, touch_y, _ui_state);
+                #endif
             }
         } else {
             // Touch in map zone but outside map rectangle - ignore
@@ -292,14 +297,8 @@ void builtin_touch_task() {
                 _ui_button_callback(1);  // 1 = NEXT
             }
         }
+        // No visual feedback for button touches - keeps red X on map
     }
-
-    // Visual feedback (if enabled)
-    #if TOUCH_VISUAL_FEEDBACK
-        if (_ui_state) {
-            display_draw_touch_feedback(touch_x, touch_y, _ui_state);
-        }
-    #endif
 
     // Legacy callback for backward compatibility
     if (_touch_callback) {

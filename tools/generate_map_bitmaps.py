@@ -258,9 +258,9 @@ def generate_c_header(slice_data: List[dict]) -> str:
 
 
 def main():
-    print("╔════════════════════════════════════════════════════════════╗")
-    print("║   RadioWall Map Bitmap Generator                          ║")
-    print("╚════════════════════════════════════════════════════════════╝")
+    print("=" * 62)
+    print("   RadioWall Map Bitmap Generator")
+    print("=" * 62)
     print()
 
     # Download/load Natural Earth data
