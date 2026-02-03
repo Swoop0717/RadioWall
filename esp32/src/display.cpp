@@ -176,18 +176,31 @@ void display_wake() {
     }
 }
 
+// Store previous marker position for efficient clearing
+static int _prev_marker_x = -1;
+static int _prev_marker_y = -1;
+
 void display_draw_touch_feedback(int x, int y, UIState* state) {
     if (!gfx || !state) return;
 
-    // Refresh the entire map to clear previous mark
-    display_refresh_map_only(state);
+    const int mark_size = 4;  // Half-size of the X
 
-    // Draw a small X marker at touch location
-    if (x >= 0 && x < LCD_WIDTH && y >= 0 && y < LCD_HEIGHT) {
-        int mark_size = 4;  // Half-size of the X
+    // Clear previous marker by drawing over it with black
+    // Note: This works well for ocean areas but may leave artifacts on land
+    // A full map refresh only happens on region change, which is acceptable
+    if (_prev_marker_x >= 0 && _prev_marker_y >= 0) {
+        gfx->drawLine(_prev_marker_x - mark_size, _prev_marker_y - mark_size,
+                      _prev_marker_x + mark_size, _prev_marker_y + mark_size, BLACK);
+        gfx->drawLine(_prev_marker_x - mark_size, _prev_marker_y + mark_size,
+                      _prev_marker_x + mark_size, _prev_marker_y - mark_size, BLACK);
+    }
+
+    // Draw new X marker at touch location
+    if (x >= 0 && x < LCD_WIDTH && y >= 0 && y < LCD_HEIGHT - 60) {  // Stay above status bar
         gfx->drawLine(x - mark_size, y - mark_size, x + mark_size, y + mark_size, RED);
         gfx->drawLine(x - mark_size, y + mark_size, x + mark_size, y - mark_size, RED);
-        Serial.printf("[Display] Touch feedback X at (%d, %d)\n", x, y);
+        _prev_marker_x = x;
+        _prev_marker_y = y;
     }
 }
 

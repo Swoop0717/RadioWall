@@ -218,7 +218,13 @@ bool radio_play_at_location(float lat, float lon) {
 
 bool radio_play_next() {
     if (_total_stations == 0) {
+        Serial.println("[Radio] No stations loaded");
         return false;
+    }
+
+    // If only 1 station, no point in "next"
+    if (_total_stations == 1) {
+        Serial.println("[Radio] Only 1 station available");
     }
 
     String station_id = _cached_station_ids[_current_station_index];

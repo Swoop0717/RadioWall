@@ -88,11 +88,26 @@ static void on_slice_cycle() {
 }
 
 static void on_stop_button() {
-    Serial.println("[Main] STOP (physical)");
+    Serial.println("[Main] STOP (button)");
     radio_stop();
     ui_state.set_stopped();
     display_update_status_bar(&ui_state);
     display_wake();
+}
+
+static void on_next_button() {
+    Serial.println("[Main] NEXT (button)");
+    display_wake();
+    display_show_status("Loading...");
+    if (radio_play_next()) {
+        const StationInfo* station = radio_get_current();
+        if (station) {
+            ui_state.set_playing(station->title, station->place);
+            display_update_status_bar(&ui_state);
+        }
+    } else {
+        display_show_status("No more stations");
+    }
 }
 
 // ------------------------------------------------------------------
@@ -141,10 +156,12 @@ void setup() {
     // Initialize radio client
     radio_client_init();
 
-    // Initialize buttons
+    // Initialize buttons (GPIO 0 only - GPIO 21 conflicts with display)
+    // Short press: cycle region, Long press: STOP, Double-tap: NEXT
     button_init();
     button_set_band_cycle_callback(on_slice_cycle);
     button_set_stop_callback(on_stop_button);
+    button_set_next_callback(on_next_button);
 
     // Initialize touch
     touch_init();
