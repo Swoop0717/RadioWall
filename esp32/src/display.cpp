@@ -208,27 +208,14 @@ void display_show_map_view(UIState* state) {
 
     Serial.println("[Display] Showing portrait map view (180×640)...");
 
-    // Clear screen
+    // Clear screen with black
     gfx->fillScreen(BLACK);
 
-    // Portrait mode: 180 wide × 640 tall
-    // Map area: 180×580 (0-580), Status bar: 180×60 (580-640)
-
-    // === MAP AREA (0 to 580) - Full height ===
-    // Map fills entire top area
-    int map_x = 10;
-    int map_y = 10;
-    int map_w = 160;
-    int map_h = 560;  // Almost full height (leaving small margins)
-
-    gfx->fillRect(map_x, map_y, map_w, map_h, 0x0020);  // Dark blue
-    gfx->drawRect(map_x-1, map_y-1, map_w+2, map_h+2, WHITE);
-
-    // "MAP" label in center
-    gfx->setTextSize(3);
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(map_x + 50, map_y + map_h/2 - 15);
-    gfx->println("MAP");
+    // Draw the map slice at top-left (160x560 bitmap)
+    MapSlice& slice = state->get_current_slice();
+    if (slice.bitmap && slice.bitmap_size > 0) {
+        draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
+    }
 
     // === STATUS BAR (580 to 640) ===
     display_update_status_bar(state);
@@ -305,26 +292,16 @@ void display_update_status_bar(UIState* state) {
 void display_refresh_map_only(UIState* state) {
     if (!gfx || !state) return;
 
-    Serial.println("[Display] Refreshing map area (portrait mode)...");
+    Serial.println("[Display] Refreshing map area...");
 
-    // Portrait mode: Clear map area only (0 to 580)
-    const int MAP_H = 580;
-    gfx->fillRect(0, 0, 180, MAP_H, BLACK);
+    // Clear map area (0 to 580) with black
+    gfx->fillRect(0, 0, 180, 580, BLACK);
 
-    // Redraw full-height map (same as display_show_map_view but without status bar)
-    int map_x = 10;
-    int map_y = 10;
-    int map_w = 160;
-    int map_h = 560;  // Almost full height
-
-    // Draw border
-    gfx->drawRect(map_x-1, map_y-1, map_w+2, map_h+2, WHITE);
-
-    // Get current slice and render bitmap
+    // Draw the map slice at top-left (160x560 bitmap)
     MapSlice& slice = state->get_current_slice();
-
-    // Draw the map slice bitmap at the correct position
-    draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, map_x, map_y);
+    if (slice.bitmap && slice.bitmap_size > 0) {
+        draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
+    }
 
     Serial.println("[Display] Map refresh complete");
 }

@@ -26,6 +26,7 @@
 #include "display.h"
 #include "ui_state.h"
 #include "button_handler.h"
+#include "places_db.h"
 
 // ------------------------------------------------------------------
 // Global State
@@ -116,6 +117,12 @@ void setup() {
     // Initialize display first (visual feedback)
     display_init();
 
+    // Initialize places database from LittleFS
+    if (!places_db_init()) {
+        Serial.println("[Main] WARNING: Places database not loaded");
+        Serial.println("[Main] Run 'pio run -t uploadfs' to upload places.bin");
+    }
+
     // Show temporary connecting screen
     display_show_connecting();
 
@@ -161,4 +168,5 @@ void loop() {
     touch_task();
     button_task();
     display_loop();
+    places_db_serial_task();
 }

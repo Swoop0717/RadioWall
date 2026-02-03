@@ -119,7 +119,8 @@ void builtin_touch_task() {
     // Check for touch interrupt
     if (!_touch_interrupt) {
         // Also check for serial simulation (for testing)
-        if (Serial.available()) {
+        // Only consume if it's a T: command (peek first char)
+        if (Serial.available() && Serial.peek() == 'T') {
             String line = Serial.readStringUntil('\n');
             line.trim();
 
@@ -229,61 +230,48 @@ void builtin_touch_task() {
     uint16_t portrait_y = touch_y;  // 0-639
 
     const int MAP_AREA_HEIGHT = 580;
+    const int MAP_WIDTH = 180;
 
     if (portrait_y < MAP_AREA_HEIGHT) {
-        // Map area touched - check if touch is inside the actual map rectangle
-        // Map rectangle bounds: x=[10,170], y=[10,570]
-        const int MAP_X_MIN = 10;
-        const int MAP_X_MAX = 170;
-        const int MAP_Y_MIN = 10;
-        const int MAP_Y_MAX = 570;
+        // Map area touched - full screen, no padding
+        if (_ui_state && _map_touch_callback) {
+            MapSlice& slice = _ui_state->get_current_slice();
 
-        if (portrait_x >= MAP_X_MIN && portrait_x <= MAP_X_MAX &&
-            portrait_y >= MAP_Y_MIN && portrait_y <= MAP_Y_MAX) {
+            // Normalize coordinates (0.0 to 1.0) - full map area
+            float norm_x = portrait_x / (float)(MAP_WIDTH - 1);
+            float norm_y = portrait_y / (float)(MAP_AREA_HEIGHT - 1);
 
-            // Touch is inside map rectangle - translate coordinates
-            if (_ui_state && _map_touch_callback) {
-                MapSlice& slice = _ui_state->get_current_slice();
+            // portrait_x spans the NARROW axis (180px) = LONGITUDE within slice
+            float lon_range = slice.lon_max - slice.lon_min;
+            if (lon_range < 0) lon_range += 360.0f;  // Handle Pacific wrapping
+            float lon = slice.lon_min + norm_x * lon_range;
 
-                // Normalize coordinates within map rectangle (0.0 to 1.0)
-                float norm_x = (portrait_x - MAP_X_MIN) / (float)(MAP_X_MAX - MAP_X_MIN);
-                float norm_y = (portrait_y - MAP_Y_MIN) / (float)(MAP_Y_MAX - MAP_Y_MIN);
+            // portrait_y spans the TALL axis (580px) = LATITUDE (north at top)
+            float lat = 90.0f - norm_y * 180.0f;  // top=90°N, bottom=90°S
 
-                // portrait_x spans the NARROW axis (160px) = LONGITUDE within slice
-                float lon_range = slice.lon_max - slice.lon_min;
-                if (lon_range < 0) lon_range += 360.0f;  // Handle Pacific wrapping (150→-150 = 60°)
-                float lon = slice.lon_min + norm_x * lon_range;
+            // Normalize longitude to [-180, 180]
+            if (lon > 180.0f) lon -= 360.0f;
+            if (lon < -180.0f) lon += 360.0f;
 
-                // portrait_y spans the TALL axis (560px) = LATITUDE (north at top)
-                float lat = 90.0f - norm_y * 180.0f;  // top=90°N, bottom=90°S
+            // Convert to server's 1024×600 equirectangular map space (for MQTT compatibility)
+            int server_x = (int)((lon + 180.0f) / 360.0f * 1024.0f);
+            int server_y = (int)((90.0f - lat) / 180.0f * 600.0f);
 
-                // Normalize longitude to [-180, 180]
-                if (lon > 180.0f) lon -= 360.0f;
-                if (lon < -180.0f) lon += 360.0f;
+            // Clamp to valid range
+            if (server_x < 0) server_x = 0;
+            if (server_x > 1023) server_x = 1023;
+            if (server_y < 0) server_y = 0;
+            if (server_y > 599) server_y = 599;
 
-                // Convert to server's 1024×600 equirectangular map space
-                int server_x = (int)((lon + 180.0f) / 360.0f * 1024.0f);
-                int server_y = (int)((90.0f - lat) / 180.0f * 600.0f);
+            Serial.printf("[Touch] Map: Portrait(%d,%d) -> Lat/Lon(%.2f,%.2f) -> Server(%d,%d)\n",
+                         portrait_x, portrait_y, lat, lon, server_x, server_y);
 
-                // Clamp to valid range
-                if (server_x < 0) server_x = 0;
-                if (server_x > 1023) server_x = 1023;
-                if (server_y < 0) server_y = 0;
-                if (server_y > 599) server_y = 599;
+            _map_touch_callback(server_x, server_y);
 
-                Serial.printf("[Touch] Map: Portrait(%d,%d) -> Lat/Lon(%.2f,%.2f) -> Server(%d,%d)\n",
-                             portrait_x, portrait_y, lat, lon, server_x, server_y);
-
-                _map_touch_callback(server_x, server_y);
-
-                // Visual feedback for map touches only (if enabled)
-                #if TOUCH_VISUAL_FEEDBACK
-                    display_draw_touch_feedback(touch_x, touch_y, _ui_state);
-                #endif
-            }
-        } else {
-            // Touch in map zone but outside map rectangle - ignore
-            Serial.printf("[Touch] Ignored: Outside map bounds (%d,%d)\n", portrait_x, portrait_y);
+            // Visual feedback for map touches only (if enabled)
+            #if TOUCH_VISUAL_FEEDBACK
+                display_draw_touch_feedback(touch_x, touch_y, _ui_state);
+            #endif
         }
     } else {
         // Status bar touched - detect button regions (portrait: 180px wide)
