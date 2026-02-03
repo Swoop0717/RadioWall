@@ -8,7 +8,7 @@ RadioWall is an interactive physical world map that plays local radio stations w
 
 **The Vision**: A physical paper/cloth map sits behind invisible capacitive touch glass. No screen on the map — just a small ESP32 display showing "Now Playing" info.
 
-**Current State**: **Prototype 1** — using the ESP32's built-in touchscreen as a temporary map interface while waiting for USB adapters. The full system is working end-to-end.
+**Current State**: **ESP32 Standalone Mode** — fully working end-to-end without server. Touch map → find city → fetch Radio.garden stations → stream to WiiM via LinkPlay.
 
 ## Architecture
 
@@ -49,13 +49,14 @@ RadioWall is an interactive physical world map that plays local radio stations w
 
 | Component | Status |
 |-----------|--------|
-| Server (Docker) | ✅ Running, end-to-end tested |
 | ESP32 Display | ✅ Working (Arduino_GFX + AXS15231) |
 | ESP32 Built-in Touch | ✅ Working (I2C interrupt-driven) |
-| ESP32 MQTT | ✅ Connected, pub/sub working |
-| World Map Rendering | ✅ RLE bitmaps (Prototype 1 only) |
+| Places Database | ✅ 12,486 cities loaded from LittleFS |
+| Radio.garden Client | ✅ HTTPS, JSON parsing working |
+| LinkPlay Client | ✅ WiiM control via HTTPS |
+| End-to-End Flow | ✅ Touch → Places → Radio.garden → WiiM |
+| Server (Docker) | ⏸️ Optional, not needed for standalone |
 | USB Touch Panel | 🔧 Skeleton, waiting for OTG adapter |
-| End-to-End Flow | ✅ Touch → MQTT → Server → WiiM |
 
 ### TODO: Prototype 2 (External Touch Panel)
 
@@ -493,7 +494,10 @@ RadioWall/
 │       ├── display.cpp/h
 │       ├── builtin_touch.cpp/h
 │       ├── usb_touch.cpp/h
-│       ├── mqtt_client.cpp/h
+│       ├── radio_client.cpp/h      # Radio.garden API client
+│       ├── linkplay_client.cpp/h   # WiiM/LinkPlay control
+│       ├── places_db.cpp/h         # Places database from LittleFS
+│       ├── mqtt_client.cpp/h       # Optional, for server mode
 │       ├── ui_state.cpp/h
 │       ├── world_map.cpp/h
 │       ├── world_map_data.h        # Generated
@@ -553,3 +557,126 @@ Remove map rendering code path when `USE_BUILTIN_TOUCH 0`.
 2. Verify I2C address 0x3B responding
 3. Check interrupt pin GPIO 11
 4. Ensure display initialized first (touch won't work without it!)
+
+---
+
+## ESP32 Standalone Mode (Implemented)
+
+The ESP32 now works completely standalone without a server. Key files:
+
+| File | Purpose |
+|------|---------|
+| `radio_client.cpp/h` | Radio.garden API client, station caching |
+| `linkplay_client.cpp/h` | WiiM control via LinkPlay HTTP API |
+| `places_db.cpp/h` | Load places from LittleFS, nearest-city lookup |
+
+### WiiM / LinkPlay Quirks
+
+**⚠️ WiiM uses HTTPS on port 443, NOT HTTP on port 80!**
+
+```cpp
+// WRONG - will get "Connection reset by peer"
+WiFiClient client;
+client.connect(wiim_ip, 80);
+
+// CORRECT - WiiM uses HTTPS with self-signed certificate
+WiFiClientSecure client;
+client.setInsecure();  // Skip cert verification
+client.connect(wiim_ip, 443);
+```
+
+- Port 80: Connection refused / reset
+- Port 443: Works (HTTPS with self-signed cert)
+- Port 10080: Connection refused
+
+When accessing `https://<wiim-ip>/` in browser, you'll see an SSL warning - click "Advanced" → "Accept Risk" to proceed. This confirms HTTPS is required.
+
+### Radio.garden API Quirks (ESP32)
+
+**1. Chunked Transfer Encoding**
+
+Radio.garden returns chunked responses with HTTP/1.1. ESP32's WiFiClientSecure doesn't handle this well.
+
+```cpp
+// WRONG - may get garbled/incomplete responses
+client.printf("GET %s HTTP/1.1\r\n", path);
+
+// CORRECT - HTTP/1.0 forces non-chunked response
+client.printf("GET %s HTTP/1.0\r\n", path);
+```
+
+**2. Station URL Format**
+
+The station URL in API response is `/listen/{slug}/{id}`, not `/listen/{id}`:
+
+```
+URL: /listen/radio-8/9C7CCHgB
+              ↑ slug    ↑ actual ID (use this!)
+```
+
+```cpp
+// Extract the ID (second part after /listen/)
+String url = "/listen/radio-8/9C7CCHgB";
+int slugStart = url.indexOf("/listen/") + 8;  // After "/listen/"
+int idStart = url.indexOf("/", slugStart) + 1;  // After slug
+String stationId = url.substring(idStart);  // "9C7CCHgB"
+```
+
+**3. Stream URL is a Redirect**
+
+`/api/ara/content/listen/{id}/channel.mp3` returns HTTP 302 redirect, not the stream.
+Parse the `Location` header to get the actual stream URL.
+
+**4. ArduinoJson Memory**
+
+Station list responses can be large. Use at least 16KB:
+
+```cpp
+DynamicJsonDocument doc(16384);  // 16KB for station lists
+```
+
+### Serial Command Handling
+
+When multiple modules handle serial commands, use `Serial.peek()` to check without consuming:
+
+```cpp
+void my_serial_task() {
+    if (!Serial.available()) return;
+
+    char cmd = Serial.peek();  // Look without consuming
+
+    // Only handle our commands
+    if (cmd != 'M' && cmd != 'Y') {
+        return;  // Let other handlers process it
+    }
+
+    // Now consume and process
+    String line = Serial.readStringUntil('\n');
+    // ...
+}
+```
+
+### Serial Commands (Standalone Mode)
+
+| Command | Description |
+|---------|-------------|
+| `W:<ip>` | Set WiiM IP address |
+| `P:<url>` | Play stream URL directly |
+| `S` | Stop playback |
+| `V:<0-100>` | Set volume |
+| `?` | Get WiiM status (JSON) |
+| `L:<lat>,<lon>` | Lookup nearest place |
+| `D:<count>` | Dump first N places |
+
+### PlatformIO Serial Monitor
+
+To send commands via serial monitor:
+
+```ini
+; platformio.ini
+monitor_filters = esp32_exception_decoder, send_on_enter
+monitor_echo = yes
+```
+
+- `send_on_enter`: Press Enter to send the line
+- `monitor_echo`: See what you're typing
