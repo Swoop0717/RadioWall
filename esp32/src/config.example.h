@@ -46,6 +46,20 @@
 #define TOUCH_DEBOUNCE_MS 500
 
 // =============================================================================
+// Touch Mode Settings
+// =============================================================================
+// Use built-in touchscreen (1) or external USB touch panel (0)
+#define USE_BUILTIN_TOUCH 1
+
+// Touch mapping mode (only used for legacy stretch/fit mapping)
+#define TOUCH_MAP_MODE_FIT 1
+#define TOUCH_MAP_MODE_STRETCH 0
+#define TOUCH_MAP_MODE TOUCH_MAP_MODE_STRETCH  // Zone-based mapping ignores this
+
+// Draw touch feedback marker on the map
+#define TOUCH_VISUAL_FEEDBACK 1
+
+// =============================================================================
 // Display Settings
 // =============================================================================
 // Display timeout - dim after this many seconds of inactivity
