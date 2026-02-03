@@ -1153,3 +1153,92 @@ Common commands for WiiM/LinkPlay devices:
 **Response format**: Plain text or JSON depending on command
 
 **Sources**: [AndersFluur/LinkPlayApi](https://github.com/AndersFluur/LinkPlayApi), [Arylic HTTP API](https://developer.arylic.com/httpapi/)
+
+---
+
+## Feature Feasibility Analysis
+
+> Analysis performed February 2026 based on codebase review and library research.
+
+### Difficulty Legend
+
+| Symbol | Effort | Description |
+|--------|--------|-------------|
+| 🟢 | Easy | Few hours to 1 day. Wraps existing APIs or minor changes. |
+| 🟡 | Medium | 1-3 days. New module or significant refactoring with good library support. |
+| 🟠 | Moderate-Hard | 3-7 days. Multiple new components or complex UI. |
+| 🔴 | Hard | 1-2+ weeks. Missing libraries, architecture changes, or protocol implementation. |
+
+### Feature Ratings
+
+#### 🟢 Easy Features
+
+| # | Feature | Lines | Why Easy |
+|---|---------|-------|----------|
+| 4 | Volume Control | ~20 | LinkPlay `setPlayerCmd:vol` already works. Add serial cmd + UI. |
+| 5 | Pause/Resume | ~15 | Same as stop pattern. API: `setPlayerCmd:pause/resume`. |
+| 10 | Station Count Display | ~10 | Data exists (`_current_station_index`). Update status bar to show "(2/5)". |
+| 12 | Equalizer Control | ~25 | LinkPlay `setPlayerCmd:equalizer:classic`. Serial command wrapper. |
+| 13 | Sleep Timer | ~20 | LinkPlay `setSleepTimer:<seconds>`. Simple wrapper. |
+| 14 | WiiM Hardware Presets | ~15 | LinkPlay `MCUKeyShortClick:<0-5>`. Serial command `PRESET:1`. |
+| 8 | Distance Display | ~30 | Haversine formula (documented above). Store touch coords, calculate on play. |
+
+#### 🟡 Medium Features
+
+| # | Feature | Lines | Notes |
+|---|---------|-------|-------|
+| 1 | Favorite Stations | ~150 | LittleFS + ArduinoJson pattern. New `favorites.cpp`, JSON read/write, gesture detection. |
+| 2 | Playback History | ~100 | In-memory ring buffer. Optional LittleFS persistence. Similar to station cache. |
+| 3 | Enhanced Playback Info | ~80 | `getPlayerStatus` returns JSON with Title/Artist/Album. Polling loop + display. |
+| 7 | WiiM Auto-Discovery | ~100 | [ESPmDNS](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/protocols/mdns.html) built-in. [ESP32SSDP](https://github.com/luc-github/ESP32SSDP) available. Query `_linkplay._tcp`. |
+| 9 | Dynamic Search | ~80 | Modify `places_db_find_nearest()` to return top 10 cities. Cycle cities when stations exhausted. |
+| 15 | Notification Sounds | ~40 | LinkPlay `playPromptUrl:<url>`. Need hosted sound file or embedded web server. |
+| 11 | Display Layout Overhaul | ~100 | Reduce map height, text truncation with `...`, show station count. Refactor `display.cpp`. |
+
+#### 🟠 Moderate-Hard Features
+
+| # | Feature | Lines | Notes |
+|---|---------|-------|-------|
+| 6 | Debug Log Display | ~200 | Ring buffer for Serial, redirect output, triple-tap toggle, overlay rendering. |
+| 16 | Closeup Regional Maps | ~300 | New high-res bitmaps, zoom gestures, pan navigation. Python tooling updates. |
+| 17 | Multiroom Support | ~250 | [LinkPlay multiroom API](https://developer.arylic.com/httpapi/) documented. Device discovery + selection UI. |
+| 20 | Web Configuration UI | ~400 | [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) + [ESPAsync_WiFiManager](https://github.com/khoih-prog/ESPAsync_WiFiManager). HTML/CSS/JS + captive portal. |
+
+#### 🔴 Hard Features
+
+| # | Feature | Lines | Why Hard |
+|---|---------|-------|----------|
+| 18 | UPnP/DLNA Streaming | ~500+ | No ESP32 library for *controlling* DLNA renderers. [SoapESP32](https://github.com/yellobyte/SoapESP32) only browses servers. Must implement SOAP/XML control protocol from scratch. |
+| 19 | Bluetooth A2DP Output | ~1000+ | [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) exists but ESP32 must decode audio streams (MP3/AAC). Need decoder library, significant memory, architecture change. Current design sends URLs to WiiM; BT requires ESP32 to fetch+decode+stream. |
+
+### Implementation Priority Recommendations
+
+**Quick wins (implement first):**
+1. Volume Control (#4) + Pause/Resume (#5) - trivial, high value
+2. Station Count Display (#10) - almost no code, better UX
+3. Distance Display (#8) - fun feature, simple Haversine math
+
+**Best ROI for medium effort:**
+1. Favorites (#1) - users will want this
+2. WiiM Auto-Discovery (#7) - removes hardcoded IP friction
+3. Dynamic Search (#9) - makes NEXT button much more useful
+
+**Consider dropping or deferring:**
+- UPnP/DLNA (#18) - LinkPlay works well, not worth the protocol complexity
+- Bluetooth A2DP (#19) - fundamentally different architecture, would be a separate project
+
+### Key Infrastructure Notes
+
+**What already exists (reusable):**
+- LinkPlay client with HTTPS, URL encoding, retry logic (`linkplay_client.cpp`)
+- LittleFS with 4MB partition (only 634KB used for places.bin)
+- ArduinoJson for parsing (16KB DynamicJsonDocument)
+- Serial command infrastructure with `peek()` pattern
+- Station caching with index cycling
+- PSRAM support for large allocations
+
+**Libraries to add for specific features:**
+- mDNS: Built-in `ESPmDNS.h` (no install needed)
+- SSDP: [ESP32SSDP](https://github.com/luc-github/ESP32SSDP) via PlatformIO
+- Web server: [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) + AsyncTCP
+- Bluetooth: [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) (if pursuing #19)
