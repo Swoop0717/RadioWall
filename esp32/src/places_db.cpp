@@ -219,6 +219,12 @@ bool places_db_loaded() {
 void places_db_serial_task() {
     if (!Serial.available()) return;
 
+    // Only handle our commands (L for lookup, D for debug/dump)
+    char cmd = Serial.peek();
+    if (cmd != 'L' && cmd != 'D') {
+        return;  // Let other handlers process it
+    }
+
     String line = Serial.readStringUntil('\n');
     line.trim();
 
@@ -258,8 +264,8 @@ void places_db_serial_task() {
             Serial.println("[PlacesDB] Usage: L:lat,lon (e.g., L:48.21,16.37)");
         }
     }
-    // P:count - Print first N places
-    else if (line.startsWith("P:")) {
+    // D:count - Dump/print first N places (D for debug)
+    else if (line.startsWith("D:")) {
         int count = line.substring(2).toInt();
         if (count <= 0) count = 5;
         if (count > 20) count = 20;

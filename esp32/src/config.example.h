@@ -60,6 +60,12 @@
 #define TOUCH_VISUAL_FEEDBACK 1
 
 // =============================================================================
+// WiiM / LinkPlay Settings (ESP32-only mode)
+// =============================================================================
+// WiiM device IP address (find in WiiM app or router)
+#define WIIM_IP "192.168.1.50"
+
+// =============================================================================
 // Display Settings
 // =============================================================================
 // Display timeout - dim after this many seconds of inactivity
