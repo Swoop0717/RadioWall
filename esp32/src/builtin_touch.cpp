@@ -245,18 +245,19 @@ void builtin_touch_task() {
             if (_ui_state && _map_touch_callback) {
                 MapSlice& slice = _ui_state->get_current_slice();
 
-                // Normalize coordinates to map bounds (0.0 to 1.0)
+                // Normalize coordinates within map rectangle (0.0 to 1.0)
                 float norm_x = (portrait_x - MAP_X_MIN) / (float)(MAP_X_MAX - MAP_X_MIN);
                 float norm_y = (portrait_y - MAP_Y_MIN) / (float)(MAP_Y_MAX - MAP_Y_MIN);
 
-                // X (0-1) maps to full latitude range (-90° to 90°, south to north)
-                float lat = -90.0f + norm_x * 180.0f;
-
-                // Y (0-1) maps to longitude within current slice's range
+                // portrait_x spans the NARROW axis (160px) = LONGITUDE within slice
                 float lon_range = slice.lon_max - slice.lon_min;
-                float lon = slice.lon_min + norm_y * lon_range;
+                if (lon_range < 0) lon_range += 360.0f;  // Handle Pacific wrapping (150→-150 = 60°)
+                float lon = slice.lon_min + norm_x * lon_range;
 
-                // Handle wrapping for Pacific slice (150° to -150°)
+                // portrait_y spans the TALL axis (560px) = LATITUDE (north at top)
+                float lat = 90.0f - norm_y * 180.0f;  // top=90°N, bottom=90°S
+
+                // Normalize longitude to [-180, 180]
                 if (lon > 180.0f) lon -= 360.0f;
                 if (lon < -180.0f) lon += 360.0f;
 
