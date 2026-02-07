@@ -168,10 +168,6 @@ static void fire_map_tap(uint16_t portrait_x, uint16_t portrait_y) {
                  portrait_x, portrait_y, lat, lon, server_x, server_y);
 
     _map_touch_callback(server_x, server_y);
-
-    #if TOUCH_VISUAL_FEEDBACK
-        display_draw_touch_feedback(portrait_x, portrait_y, _ui_state);
-    #endif
 }
 
 // ------------------------------------------------------------------

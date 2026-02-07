@@ -208,6 +208,84 @@ const Place* places_db_find_nearest(float lat, float lon) {
     return nearest;
 }
 
+// Second temp buffer for excluding search (can't reuse _current_place)
+static Place _exclude_result;
+
+const Place* places_db_find_nearest_excluding(float lat, float lon,
+    const String* exclude_ids, int num_exclude) {
+    if (!_loaded || _place_count == 0) {
+        return nullptr;
+    }
+
+    int16_t target_lat = (int16_t)(lat * 100);
+    int16_t target_lon = (int16_t)(lon * 100);
+
+    const Place* nearest = nullptr;
+    int32_t min_dist_sq = INT32_MAX;
+
+    if (_places) {
+        // Fast path: in-memory search
+        for (uint32_t i = 0; i < _place_count; i++) {
+            bool excluded = false;
+            for (int e = 0; e < num_exclude; e++) {
+                if (strncmp(_places[i].id, exclude_ids[e].c_str(), 15) == 0) {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (excluded) continue;
+
+            int32_t dlat = _places[i].lat_x100 - target_lat;
+            int32_t dlon = _places[i].lon_x100 - target_lon;
+
+            if (dlon > 18000) dlon -= 36000;
+            if (dlon < -18000) dlon += 36000;
+
+            int32_t dist_sq = dlat * dlat + dlon * dlon;
+
+            if (dist_sq < min_dist_sq) {
+                min_dist_sq = dist_sq;
+                nearest = &_places[i];
+            }
+        }
+    } else {
+        // Slow path: read from file
+        _db_file.seek(PLACES_HEADER_SIZE);
+
+        for (uint32_t i = 0; i < _place_count; i++) {
+            Place temp;
+            if (_db_file.read((uint8_t*)&temp, sizeof(Place)) != sizeof(Place)) {
+                break;
+            }
+
+            bool excluded = false;
+            for (int e = 0; e < num_exclude; e++) {
+                if (strncmp(temp.id, exclude_ids[e].c_str(), 15) == 0) {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (excluded) continue;
+
+            int32_t dlat = temp.lat_x100 - target_lat;
+            int32_t dlon = temp.lon_x100 - target_lon;
+
+            if (dlon > 18000) dlon -= 36000;
+            if (dlon < -18000) dlon += 36000;
+
+            int32_t dist_sq = dlat * dlat + dlon * dlon;
+
+            if (dist_sq < min_dist_sq) {
+                min_dist_sq = dist_sq;
+                memcpy(&_exclude_result, &temp, sizeof(Place));
+                nearest = &_exclude_result;
+            }
+        }
+    }
+
+    return nearest;
+}
+
 uint32_t places_db_count() {
     return _place_count;
 }

@@ -8,6 +8,7 @@
 #ifndef PLACES_DB_H
 #define PLACES_DB_H
 
+#include <Arduino.h>
 #include "places_info.h"
 
 // Initialize the places database (loads from LittleFS)
@@ -17,6 +18,10 @@ bool places_db_init();
 // Find the nearest place to given coordinates
 // Returns pointer to Place struct (valid until next call), or nullptr if DB not loaded
 const Place* places_db_find_nearest(float lat, float lon);
+
+// Find the nearest place excluding a list of place IDs (for next-city hopping)
+const Place* places_db_find_nearest_excluding(float lat, float lon,
+    const String* exclude_ids, int num_exclude);
 
 // Get place count (0 if not loaded)
 uint32_t places_db_count();

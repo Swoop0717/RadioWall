@@ -13,6 +13,7 @@
 #include "world_map.h"
 #include "menu.h"
 #include "favorites.h"
+#include "radio_client.h"
 
 #define LCD_CS TFT_QSPI_CS
 #define LCD_SCLK TFT_QSPI_SCK
@@ -259,34 +260,49 @@ void display_update_status_bar(UIState* state) {
 
     gfx->setTextSize(1);
 
-    // Line 1: Always show region
-    MapSlice& slice = state->get_current_slice();
-    gfx->setTextColor(CYAN);
-    gfx->setCursor(5, STATUS_Y + 5);
-    gfx->print("Region: ");
-    gfx->setTextColor(YELLOW);
-    gfx->println(slice.name);
-
-    // Line 2: Status text (temporary) > station info > tap prompt
+    // Line 1: City, CC (idx/total) when playing, else region name
     const char* status_text = state->get_status_text();
     if (status_text[0] != '\0') {
         gfx->setTextColor(MAGENTA);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(5, STATUS_Y + 5);
         gfx->print(status_text);
     } else if (state->get_is_playing()) {
-        char combined[64];
-        snprintf(combined, sizeof(combined), "%s | %s",
-                 state->get_station_name(), state->get_location());
-        if (strlen(combined) > 28) {
-            combined[25] = '.';
-            combined[26] = '.';
-            combined[27] = '.';
-            combined[28] = '\0';
+        // Show: "City, CC (2/5)"
+        const StationInfo* station = radio_get_current();
+        int idx = radio_get_station_index();
+        int total = radio_get_total_stations();
+        char line1[32];
+        if (station && total > 0) {
+            snprintf(line1, sizeof(line1), "%s, %s (%d/%d)",
+                     station->place, station->country, idx, total);
+        } else {
+            snprintf(line1, sizeof(line1), "%s", state->get_location());
         }
+        if (strlen(line1) > 28) {
+            line1[25] = '.';
+            line1[26] = '.';
+            line1[27] = '.';
+            line1[28] = '\0';
+        }
+        gfx->setTextColor(GREEN);
+        gfx->setCursor(5, STATUS_Y + 5);
+        gfx->print(line1);
+    } else {
+        MapSlice& slice = state->get_current_slice();
+        gfx->setTextColor(CYAN);
+        gfx->setCursor(5, STATUS_Y + 5);
+        gfx->print(slice.name);
+    }
+
+    // Line 2: Station name when playing, else tap prompt
+    if (state->get_is_playing() && status_text[0] == '\0') {
+        char sname[29];
+        strncpy(sname, state->get_station_name(), 28);
+        sname[28] = '\0';
         gfx->setTextColor(WHITE);
         gfx->setCursor(5, STATUS_Y + 20);
-        gfx->print(combined);
-    } else {
+        gfx->print(sname);
+    } else if (!state->get_is_playing() && status_text[0] == '\0') {
         gfx->setTextColor(WHITE);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print("Tap map to play");

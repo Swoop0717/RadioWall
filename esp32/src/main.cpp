@@ -56,6 +56,7 @@ static void on_map_touch(int server_x, int server_y) {
         if (station) {
             ui_state.set_playing(station->title, station->place);
             ui_state.set_marker(station->lat, station->lon);
+            display_draw_marker_at_latlon(station->lat, station->lon, &ui_state);
             display_update_status_bar(&ui_state);
         }
     } else {
@@ -169,12 +170,19 @@ static void on_ui_button(int button_id) {
             display_update_status_bar(&ui_state);
         } else if (button_id == 1) {
             Serial.println("[Main] NEXT");
+            ui_state.set_status_text("Loading...");
+            display_update_status_bar(&ui_state);
             if (radio_play_next()) {
                 const StationInfo* station = radio_get_current();
                 if (station) {
                     ui_state.set_playing(station->title, station->place);
+                    ui_state.set_marker(station->lat, station->lon);
+                    display_draw_marker_at_latlon(station->lat, station->lon, &ui_state);
                     display_update_status_bar(&ui_state);
                 }
+            } else {
+                ui_state.set_status_text("No more stations");
+                display_update_status_bar(&ui_state);
             }
         }
     }
@@ -214,6 +222,8 @@ static void on_next_button() {
         const StationInfo* station = radio_get_current();
         if (station) {
             ui_state.set_playing(station->title, station->place);
+            ui_state.set_marker(station->lat, station->lon);
+            display_draw_marker_at_latlon(station->lat, station->lon, &ui_state);
             display_update_status_bar(&ui_state);
         }
     } else {

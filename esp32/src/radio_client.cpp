@@ -14,13 +14,21 @@ static const char* RADIO_GARDEN_HOST = "radio.garden";
 // Current state
 static StationInfo _current_station;
 static String _current_place_id;
-static int _current_station_index = 0;
+static int _current_station_index = 0;   // Next station to play (0-based)
+static int _playing_station_index = -1;  // Currently playing station (0-based, -1 = none)
 static int _total_stations = 0;
 
 // Cache of station IDs for current place (for "next" functionality)
-static const int MAX_CACHED_STATIONS = 20;
+static const int MAX_CACHED_STATIONS = 100;
 static String _cached_station_ids[MAX_CACHED_STATIONS];
 static String _cached_station_titles[MAX_CACHED_STATIONS];
+
+// Next-city hopping state
+static float _touch_origin_lat = 0;
+static float _touch_origin_lon = 0;
+static const int MAX_VISITED_CITIES = 20;
+static String _visited_place_ids[MAX_VISITED_CITIES];
+static int _num_visited = 0;
 
 // Make HTTPS request to radio.garden
 static String https_get(const char* path) {
@@ -136,20 +144,23 @@ static String get_redirect_url(const char* path) {
     return location;
 }
 
+// Forward declaration
+static bool fetch_and_play_place(const Place* place);
+
 void radio_client_init() {
     memset(&_current_station, 0, sizeof(_current_station));
     _current_place_id = "";
     _current_station_index = 0;
+    _playing_station_index = -1;
     _total_stations = 0;
+    _num_visited = 0;
 }
 
-bool radio_play_at_location(float lat, float lon) {
-    // Find nearest place
-    const Place* place = places_db_find_nearest(lat, lon);
-    if (!place) {
-        return false;
-    }
-
+/**
+ * Fetch stations for a Place and play the first one.
+ * Used by both radio_play_at_location and radio_play_next_city.
+ */
+static bool fetch_and_play_place(const Place* place) {
     Serial.printf("[Radio] %s, %s\n", place->name, place->country);
 
     // Store place info
@@ -169,8 +180,7 @@ bool radio_play_at_location(float lat, float lon) {
     }
 
     // Parse JSON response
-    // Response format: {"data":{"content":[{"items":[{"page":{"title":"...","url":"/listen/xxx/channel.mp3"}}]}]}}
-    DynamicJsonDocument doc(16384);  // 16KB should be enough for station list
+    DynamicJsonDocument doc(16384);
     DeserializationError error = deserializeJson(doc, response);
 
     if (error) {
@@ -190,15 +200,13 @@ bool radio_play_at_location(float lat, float lon) {
             const char* url = item["page"]["url"];
 
             if (title && url) {
-                // Extract station ID from URL
-                // Format: "/listen/{slug}/{id}" - we need the ID (second part)
                 String urlStr = String(url);
                 int listenIdx = urlStr.indexOf("/listen/");
                 if (listenIdx >= 0) {
                     int slugStart = listenIdx + 8;
                     int idStart = urlStr.indexOf("/", slugStart);
                     if (idStart > slugStart) {
-                        idStart++;  // Skip the slash
+                        idStart++;
                         _cached_station_ids[_total_stations] = urlStr.substring(idStart);
                         _cached_station_titles[_total_stations] = String(title);
                         _total_stations++;
@@ -218,16 +226,61 @@ bool radio_play_at_location(float lat, float lon) {
     return radio_play_next();
 }
 
+bool radio_play_at_location(float lat, float lon) {
+    // Find nearest place
+    const Place* place = places_db_find_nearest(lat, lon);
+    if (!place) {
+        return false;
+    }
+
+    // Store touch origin for next-city hopping
+    _touch_origin_lat = lat;
+    _touch_origin_lon = lon;
+
+    // Reset visited cities list
+    _num_visited = 0;
+    _visited_place_ids[_num_visited++] = String(place->id);
+
+    return fetch_and_play_place(place);
+}
+
+/**
+ * Hop to the next nearest city from the original touch point.
+ * Excludes all previously visited cities.
+ */
+static bool radio_play_next_city() {
+    if (_num_visited >= MAX_VISITED_CITIES) {
+        Serial.println("[Radio] Max visited cities reached");
+        return false;
+    }
+
+    const Place* place = places_db_find_nearest_excluding(
+        _touch_origin_lat, _touch_origin_lon,
+        _visited_place_ids, _num_visited);
+
+    if (!place) {
+        Serial.println("[Radio] No cities found (DB not in memory?)");
+        return false;
+    }
+
+    Serial.printf("[Radio] -> Next city: %s, %s\n", place->name, place->country);
+    _visited_place_ids[_num_visited++] = String(place->id);
+
+    return fetch_and_play_place(place);
+}
+
 bool radio_play_next() {
     if (_total_stations == 0) {
         Serial.println("[Radio] No stations loaded");
         return false;
     }
 
-    // If only 1 station, no point in "next"
-    if (_total_stations == 1) {
-        Serial.println("[Radio] Only 1 station available");
+    // If all stations at current city exhausted, hop to next city
+    if (_current_station_index >= _total_stations) {
+        return radio_play_next_city();
     }
+
+    _playing_station_index = _current_station_index;
 
     String station_id = _cached_station_ids[_current_station_index];
     String station_title = _cached_station_titles[_current_station_index];
@@ -237,7 +290,7 @@ bool radio_play_next() {
 
     String stream_url = radio_get_stream_url(station_id.c_str());
     if (stream_url.length() == 0) {
-        _current_station_index = (_current_station_index + 1) % _total_stations;
+        _current_station_index++;
         return false;
     }
 
@@ -249,8 +302,8 @@ bool radio_play_next() {
     // Play via LinkPlay
     bool success = linkplay_play(stream_url.c_str());
 
-    // Advance to next station for next time
-    _current_station_index = (_current_station_index + 1) % _total_stations;
+    // Advance index for next call
+    _current_station_index++;
 
     return success;
 }
@@ -304,4 +357,13 @@ String radio_get_stream_url(const char* station_id) {
     }
 
     return redirect_url;
+}
+
+int radio_get_station_index() {
+    if (_playing_station_index < 0) return 0;
+    return _playing_station_index + 1;  // 1-based
+}
+
+int radio_get_total_stations() {
+    return _total_stations;
 }

@@ -11,9 +11,9 @@
 #include <Arduino.h>
 #include "Arduino_GFX_Library.h"
 
-// Map dimensions (portrait: 160×560)
-#define MAP_WIDTH 160
-#define MAP_HEIGHT 560
+// Map dimensions (portrait: 180×580, fills display above status bar)
+#define MAP_WIDTH 180
+#define MAP_HEIGHT 580
 
 // Bitmap data (PROGMEM arrays, defined in world_map.cpp)
 extern const uint8_t map_slice_americas[];

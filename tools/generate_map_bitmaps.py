@@ -28,9 +28,9 @@ import requests
 from PIL import Image
 
 
-# Map dimensions (portrait: 160 wide × 560 tall - vertical slices)
-MAP_WIDTH = 160
-MAP_HEIGHT = 560
+# Map dimensions (portrait: 180 wide × 580 tall - fills display above status bar)
+MAP_WIDTH = 180
+MAP_HEIGHT = 580
 
 # Longitude slices (vertical slices of the world)
 LONGITUDE_SLICES = [
@@ -215,7 +215,7 @@ def generate_c_header(slice_data: List[dict]) -> str:
         " * Generated from Natural Earth 1:110m coastline data (public domain)",
         " * https://www.naturalearthdata.com/",
         " *",
-        " * Format: RLE-compressed 160×560 bitmaps (byte pairs: [count, color])",
+        " * Format: RLE-compressed 180×580 bitmaps (byte pairs: [count, color])",
         " * Color: 0 = black (ocean), 1 = white (land)",
         " *",
         " * DO NOT EDIT - Regenerate with tools/generate_map_bitmaps.py",

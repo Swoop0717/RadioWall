@@ -29,7 +29,9 @@ void radio_client_init();
 bool radio_play_at_location(float lat, float lon);
 
 // Play the next station at the current location
-// Returns true if there's another station to play
+// When all stations at the current city are exhausted, automatically
+// hops to the next nearest city from the original touch point.
+// Returns true if playback started successfully
 bool radio_play_next();
 
 // Stop playback
@@ -46,5 +48,9 @@ bool radio_play_by_id(const char* station_id, const char* title,
 // Get the stream URL for a station ID
 // Returns empty string on failure
 String radio_get_stream_url(const char* station_id);
+
+// Station count accessors (for status bar display)
+int radio_get_station_index();      // 1-based index of currently playing station
+int radio_get_total_stations();     // Total stations at current city
 
 #endif // RADIO_CLIENT_H

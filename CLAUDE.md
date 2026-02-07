@@ -63,12 +63,18 @@ RadioWall is an interactive physical world map that plays local radio stations w
 
 | Input | Action |
 |-------|--------|
-| Touch map | Play radio from nearest city |
+| Touch map | Play radio from nearest city (X marker at city) |
 | Touch STOP button | Stop playback |
-| Touch NEXT button | Play next station at same city |
+| Touch NEXT button | Next station; hops to next city when exhausted |
+| Swipe left/right | Cycle map region |
 | Button short press | Cycle map region (Americas/Europe/Asia/Pacific) |
-| Button long press (>800ms) | Stop playback |
+| Button long press (>800ms) | Toggle menu |
 | Button double-tap (<400ms) | Next station |
+| Menu → Volume | Tap-based vertical volume slider |
+| Menu → Pause/Resume | Toggle pause/resume |
+| Menu → Sleep Timer | Cycle: Off/15/30/60/90 min |
+| Menu → Favorites | View/play/delete saved stations |
+| Favorites → ADD | Save currently playing station |
 
 ### TODO: Prototype 2 (External Touch Panel)
 
@@ -190,11 +196,13 @@ mosquitto_pub -t "radiowall/command" -m '{"cmd":"stop"}'
 | `display.cpp/h` | AMOLED rendering (Arduino_GFX) |
 | `builtin_touch.cpp/h` | Built-in touchscreen (I2C, interrupt-driven) |
 | `usb_touch.cpp/h` | USB HID touch panel (skeleton) |
-| `radio_client.cpp/h` | Radio.garden API client, station caching |
+| `radio_client.cpp/h` | Radio.garden API client, station caching, next-city hopping |
 | `linkplay_client.cpp/h` | WiiM control via LinkPlay HTTPS API |
 | `places_db.cpp/h` | Places database from LittleFS |
-| `ui_state.cpp/h` | Slice selection, playback state |
+| `ui_state.cpp/h` | Slice selection, playback state, marker tracking |
 | `world_map.cpp/h` | RLE bitmap decompression and optimized drawing |
+| `menu.cpp/h` | Touch menu system (volume, pause, favorites, sleep timer) |
+| `favorites.cpp/h` | Favorites storage (LittleFS JSON), rendering, touch |
 | `button_handler.cpp/h` | Multi-action button (short/long/double-tap) |
 | `pins_config.h` | Hardware pin definitions |
 | `config.h` | WiFi, WiiM IP settings (git-ignored) |
@@ -243,17 +251,16 @@ D:10            # Dump first 10 places from database
 
 ```
 ┌──────────────────┐  (0,0)
-│ ┌──────────────┐ │
-│ │              │ │  Map Area: 160×560
-│ │  Map Bitmap  │ │  Position: (10, 10)
-│ │  (current    │ │
-│ │   slice)     │ │  Touch here → lat/lon → server
-│ │              │ │
-│ └──────────────┘ │
+│                  │
+│   Map Bitmap     │  Map Area: 180×580 (full width)
+│   (current       │  Position: (0, 0)
+│    slice)        │
+│   [X] = city     │  Red X marker at playing city
+│                  │
 ├──────────────────┤  y=580
-│ Region: Europe   │  Status Bar: 180×60
-│ Station | City   │
-│ [STOP]    [NEXT] │  Touch buttons
+│ City, CC (2/5)   │  Status Bar: 180×60
+│ Station Name     │  Line 1: city + station count (green)
+│ [STOP]    [NEXT] │  Line 2: station name (white)
 └──────────────────┘  (180,640)
 ```
 
@@ -278,7 +285,7 @@ pip install -r requirements.txt
 python generate_map_bitmaps.py
 ```
 
-Downloads Natural Earth 1:110m coastline data, renders 160×560 bitmaps, RLE compresses to `esp32/src/world_map_data.h` (~20KB total).
+Downloads Natural Earth 1:110m coastline data, renders 180×580 bitmaps, RLE compresses to `esp32/src/world_map_data.h` (~22KB total).
 
 ---
 
@@ -335,15 +342,15 @@ Zone Detection
 ```cpp
 // In builtin_touch.cpp, map area touch handling:
 
-// Normalize to map bounds
-float norm_x = (portrait_x - 10) / 160.0f;  // 0.0 to 1.0
-float norm_y = (portrait_y - 10) / 560.0f;  // 0.0 to 1.0
+// Normalize to map bounds (full width, no padding)
+float norm_x = portrait_x / 179.0f;  // 0.0 to 1.0
+float norm_y = portrait_y / 579.0f;  // 0.0 to 1.0
 
-// X maps to latitude (-90° to 90°)
-float lat = -90.0f + norm_x * 180.0f;
+// X maps to longitude within current slice
+float lon = slice.lon_min + norm_x * lon_range;
 
-// Y maps to longitude within current slice
-float lon = slice.lon_min + norm_y * (slice.lon_max - slice.lon_min);
+// Y maps to latitude (90° at top to -90° at bottom)
+float lat = 90.0f - norm_y * 180.0f;
 
 // Convert to server's 1024×600 equirectangular space
 int server_x = (int)((lon + 180.0f) / 360.0f * 1024.0f);
@@ -717,40 +724,32 @@ The RLE-compressed map data is decoded into horizontal line segments, reducing S
 
 **Note:** For truly instant rendering (<100ms), would need PSRAM framebuffer (~209KB for 180×580×16bit). Current performance is acceptable for region changes.
 
-### Station Count Behavior
+### Station Count & Next-City Hopping
 
-When pressing NEXT, the station cycles through available stations at the current city:
+When pressing NEXT, the station cycles through stations at the current city, then hops to the next nearest city from the original touch point:
 
 - `[Radio] Playing: Station Name (1/5)` → 5 stations available, currently on #1
-- `[Radio] Playing: Station Name (2/5)` → Moved to station #2
-- `[Radio] Only 1 station available` → NEXT will replay the same station
+- `[Radio] Playing: Station Name (5/5)` → Last station at this city
+- `[Radio] -> Next city: Bratislava, SK` → Exhausted, auto-hopping to next nearest city
+- `[Radio] Playing: Station Name (1/3)` → Now at the new city
 
-Many small cities have only 1 station in Radio.garden. This is expected behavior.
+The status bar shows `City, CC (idx/total)` — e.g., "Vienna, AT (2/5)". Up to 20 cities can be visited per touch session. Station cache holds up to 100 stations per city.
+
+Many small cities have only 1 station in Radio.garden. NEXT will immediately hop to the next city.
 
 ---
 
 ## Future Features
 
-### Planned Features (Short-term)
+### ✅ Completed Features
 
-#### 1. Favorite Stations / Export
+#### ~~1. Favorite Stations~~ → DONE (`favorites.cpp/h`)
 
-Save stations for quick access later:
-
-- **Favorites list**: Touch-and-hold on NEXT button to save current station
-- **Favorites menu**: Long-press region button to show saved stations
-- **Storage**: LittleFS JSON file (`/favorites.json`)
-- **Export**: Serial command to dump favorites as JSON
-- **Implementation**: `favorites.cpp/h` with circular buffer of ~20 stations
-
-```cpp
-struct FavoriteStation {
-    char station_id[16];
-    char title[48];
-    char place[32];
-    char country[3];
-};
-```
+- Menu → Favorites view with paginated list (6 per page, max 20)
+- Tap left side to play, tap right "x" to delete
+- ADD button saves currently playing station
+- Stored as JSON on LittleFS (`/favorites.json`)
+- Playing a favorite auto-switches to correct map slice + shows marker
 
 #### 2. Playback History with Replay
 
@@ -791,29 +790,16 @@ String status = linkplay_get("/httpapi.asp?command=getPlayerStatus");
 // Parse JSON: {"status":"play","vol":"50","Title":"Radio Wien",...}
 ```
 
-#### 4. Volume Control
+#### ~~4. Volume Control~~ → DONE (`menu.cpp`, `linkplay_client.cpp`)
 
-Add volume control via LinkPlay:
+- Menu → Volume view with tap-based vertical slider (0-100%)
+- Fetches current volume from WiiM on open
+- Debounced LinkPlay API calls (200ms)
 
-- **Serial**: `V:50` (set volume), `V:+10` (relative)
-- **Touch**: Long-press on map area for volume slider?
-- **API**: `setPlayerCmd:vol:50`
+#### ~~5. Pause/Resume~~ → DONE (`menu.cpp`)
 
-```cpp
-bool linkplay_set_volume(int vol) {
-    char cmd[64];
-    snprintf(cmd, sizeof(cmd), "/httpapi.asp?command=setPlayerCmd:vol:%d", vol);
-    return linkplay_get(cmd).length() > 0;
-}
-```
-
-#### 5. Pause/Resume
-
-Add pause/resume support:
-
-- **Touch**: Tap status bar to toggle pause/play
-- **API**: `setPlayerCmd:pause` / `setPlayerCmd:resume`
-- **Note**: Only works during active playback, not for stopped state
+- Menu → Pause/Resume toggle
+- Uses `setPlayerCmd:pause` / `setPlayerCmd:resume`
 
 #### 6. Debug Log Display
 
@@ -871,105 +857,25 @@ float haversine_km(float lat1, float lon1, float lat2, float lon2) {
 static float _touch_lat, _touch_lon;
 ```
 
-#### 9. Dynamic Search (Smart Station Cycling)
+#### ~~9. Dynamic Search (Next-City Hopping)~~ → DONE (`radio_client.cpp`, `places_db.cpp`)
 
-Smarter than fixed radius - cycles through nearby cities automatically:
+- NEXT cycles through all stations at current city
+- When exhausted, auto-hops to next nearest city from original touch point
+- Uses `places_db_find_nearest_excluding()` with visited city list (max 20)
+- Status bar updates with new city name and station count
+- X marker moves to new city location
 
-**Current behavior:**
-- Touch → find nearest city → play all its stations → NEXT wraps to station 1
+#### ~~10. Station Count Display~~ → DONE (`display.cpp`, `radio_client.cpp`)
 
-**New behavior:**
-- Touch → find nearest city → play all its stations
-- When stations exhausted → automatically find NEXT nearest city → play its stations
-- Continues outward until user touches a new location
+- Status bar line 1: "City, CC (idx/total)" — e.g., "Vienna, AT (2/5)"
+- Status bar line 2: Station name (truncated to 28 chars)
+- `radio_get_station_index()` and `radio_get_total_stations()` accessors
 
-**Implementation:**
-```cpp
-// Cache multiple nearby cities, not just one
-static const int MAX_NEARBY_CITIES = 10;
-static Place _nearby_cities[MAX_NEARBY_CITIES];
-static float _nearby_distances[MAX_NEARBY_CITIES];
-static int _num_nearby_cities = 0;
-static int _current_city_index = 0;
+#### ~~11. Display Layout~~ → DONE (`display.cpp`)
 
-bool radio_play_next() {
-    // Try next station at current city
-    if (_current_station_index < _total_stations - 1) {
-        _current_station_index++;
-        return play_current_station();
-    }
-
-    // No more stations at this city - try next city
-    if (_current_city_index < _num_nearby_cities - 1) {
-        _current_city_index++;
-        fetch_stations_for_city(_nearby_cities[_current_city_index]);
-        _current_station_index = 0;
-        return play_current_station();
-    }
-
-    // Exhausted all nearby cities
-    Serial.println("[Radio] No more cities nearby");
-    return false;
-}
-```
-
-**UI feedback:**
-- "Vienna (2/5) • 243km" → playing station 2 of 5 in Vienna
-- "→ Bratislava (1/3) • 65km" → moved to next city automatically
-- Serial: `[Radio] Moving to next city: Bratislava (65km)`
-
-#### 10. Station Count Display
-
-Show how many stations were found at current location:
-
-- **Status bar**: "Vienna (5 stations)" or "Vienna (1 station)"
-- **Serial**: Already logs `[Radio] 5 stations available`
-- **On NEXT**: Show "(2/5)" indicator - already implemented in logs
-- **Implementation**: Add station count to UIState, display in status bar
-
-#### 11. Display Layout Overhaul
-
-Fix text wrapping and improve information display:
-
-**Current Problems:**
-- Long station names wrap badly or overflow
-- City + country can exceed width
-- Status bar cramped with buttons
-
-**Proposed Layout (180×640 portrait):**
-```
-┌──────────────────┐  (0,0)
-│ ┌──────────────┐ │
-│ │              │ │  Map Area: 160×520 (reduced)
-│ │  Map Bitmap  │ │  Position: (10, 10)
-│ │              │ │
-│ └──────────────┘ │
-├──────────────────┤  y=540
-│ ♫ Station Name   │  Line 1: Station (truncate with ...)
-│ 📍 City, Country │  Line 2: Location
-│ (2/5) advancement|  Line 3: Progress + region
-│ [STOP]    [NEXT] │  Line 4: Buttons
-└──────────────────┘  (180,640)
-```
-
-**Text handling:**
-```cpp
-// Truncate long strings with ellipsis
-String truncate(const String& str, int max_chars) {
-    if (str.length() <= max_chars) return str;
-    return str.substring(0, max_chars - 3) + "...";
-}
-
-// Use monospace font for consistent width calculation
-// Or measure text width with gfx->getTextBounds()
-```
-
-**Implementation:**
-- Reduce map height from 560 to 520 pixels
-- Add dedicated lines for each piece of info
-- Use `gfx->setTextWrap(false)` to prevent ugly wrapping
-- Truncate strings to fit display width
-- Show station index "(2/5)" on screen, not just serial
+- Map: 180×580 full-width (no padding)
+- Status bar: 3 lines — city+count, station name, [STOP][NEXT] buttons
+- Text truncated with "..." at 28 chars
 
 #### 12. Equalizer Control
 
@@ -988,27 +894,12 @@ bool linkplay_set_equalizer(const char* mode) {
 }
 ```
 
-#### 13. Sleep Timer
+#### ~~13. Sleep Timer~~ → DONE (`menu.cpp`, `linkplay_client.cpp`)
 
-Auto-stop playback after duration:
+- Menu → Sleep Timer cycles through presets: Off/15/30/60/90 min
+- Uses LinkPlay `setSleepTimer:<seconds>` API
 
-- **Serial**: `SLEEP:30` (30 minutes), `SLEEP:0` (cancel)
-- **API**: `setSleepTimer:<seconds>`, `getSleepTimer`
-- **UI**: Touch gesture or menu option
-- **Display**: Show remaining time when active
-
-```cpp
-bool linkplay_set_sleep_timer(int minutes) {
-    char cmd[48];
-    snprintf(cmd, sizeof(cmd), "setSleepTimer:%d", minutes * 60);
-    return make_request(cmd).length() > 0;
-}
-
-int linkplay_get_sleep_timer() {
-    String response = make_request("getSleepTimer");
-    return response.toInt() / 60;  // Returns seconds, convert to minutes
-}
-```
+### Planned Features (Short-term)
 
 #### 14. WiiM Hardware Presets
 
