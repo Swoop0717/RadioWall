@@ -54,6 +54,9 @@ const size_t map_slice_pacific_size = sizeof(map_slice_pacific);
 /**
  * Draw RLE-compressed map bitmap at specified position
  *
+ * OPTIMIZED: Uses drawFastHLine() instead of drawPixel() for much faster rendering.
+ * Draws horizontal line segments for each RLE run, splitting across rows as needed.
+ *
  * @param gfx Display object
  * @param rle_data Pointer to PROGMEM RLE data
  * @param size Size of RLE data in bytes
@@ -61,7 +64,7 @@ const size_t map_slice_pacific_size = sizeof(map_slice_pacific);
  * @param offset_y Y offset on display
  */
 void draw_map_slice(Arduino_GFX* gfx, const uint8_t* rle_data, size_t size, int offset_x, int offset_y) {
-    Serial.println("[WorldMap] Drawing map slice...");
+    unsigned long start = millis();
 
     int x = 0, y = 0;
     size_t idx = 0;
@@ -75,33 +78,38 @@ void draw_map_slice(Arduino_GFX* gfx, const uint8_t* rle_data, size_t size, int 
             break;
         }
 
-        // Draw pixels
         uint16_t display_color = color ? WHITE : BLACK;
+        int remaining = count;
 
-        for (int i = 0; i < count; i++) {
-            gfx->drawPixel(offset_x + x, offset_y + y, display_color);
-            x++;
+        // Draw horizontal lines, splitting across rows as needed
+        while (remaining > 0 && y < MAP_HEIGHT) {
+            int pixels_this_row = min(remaining, MAP_WIDTH - x);
+
+            // Draw horizontal line segment
+            gfx->drawFastHLine(offset_x + x, offset_y + y, pixels_this_row, display_color);
+
+            remaining -= pixels_this_row;
+            x += pixels_this_row;
+
             if (x >= MAP_WIDTH) {
                 x = 0;
                 y++;
-                if (y >= MAP_HEIGHT) {
-                    Serial.println("[WorldMap] Map complete");
-                    return;
-                }
             }
         }
+
+        if (y >= MAP_HEIGHT) break;
     }
 
-    // Fill remainder with black (ocean)
+    // Fill remainder with black (ocean) using fast horizontal lines
     while (y < MAP_HEIGHT) {
-        while (x < MAP_WIDTH) {
-            gfx->drawPixel(offset_x + x++, offset_y + y, BLACK);
+        if (x < MAP_WIDTH) {
+            gfx->drawFastHLine(offset_x + x, offset_y + y, MAP_WIDTH - x, BLACK);
         }
         x = 0;
         y++;
     }
 
-    Serial.println("[WorldMap] Map drawn");
+    Serial.printf("[WorldMap] Map drawn in %lu ms\n", millis() - start);
 }
 
 /**
