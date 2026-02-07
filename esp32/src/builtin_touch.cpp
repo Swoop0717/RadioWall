@@ -143,17 +143,22 @@ static void fire_map_tap(uint16_t portrait_x, uint16_t portrait_y) {
     if (!_ui_state || !_map_touch_callback) return;
 
     const int MAP_AREA_HEIGHT = 580;
-    const int MAP_WIDTH = 180;
+    const int MAP_W = 180;
 
-    MapSlice& slice = _ui_state->get_current_slice();
-
-    float norm_x = portrait_x / (float)(MAP_WIDTH - 1);
+    float norm_x = portrait_x / (float)(MAP_W - 1);
     float norm_y = portrait_y / (float)(MAP_AREA_HEIGHT - 1);
 
-    float lon_range = slice.lon_max - slice.lon_min;
+    // Use zoom-aware geographic bounds
+    float lon_min = _ui_state->get_view_lon_min();
+    float lon_max = _ui_state->get_view_lon_max();
+    float lat_max = _ui_state->get_view_lat_max();
+    float lat_min = _ui_state->get_view_lat_min();
+
+    float lon_range = lon_max - lon_min;
     if (lon_range < 0) lon_range += 360.0f;
-    float lon = slice.lon_min + norm_x * lon_range;
-    float lat = 90.0f - norm_y * 180.0f;
+
+    float lon = lon_min + norm_x * lon_range;
+    float lat = lat_max - norm_y * (lat_max - lat_min);
 
     if (lon > 180.0f) lon -= 360.0f;
     if (lon < -180.0f) lon += 360.0f;
@@ -179,10 +184,18 @@ static void handle_map_gesture(unsigned long now) {
     unsigned long duration = now - _touch_start_ms;
 
     if (abs(dx) > 30 && abs(dx) > abs(dy) && duration < 800) {
-        // Horizontal swipe
+        // Horizontal swipe: +1 = right, -1 = left
         int direction = (dx > 0) ? 1 : -1;
         Serial.printf("[Touch] Swipe %s (dx=%d, duration=%lums)\n",
                      direction > 0 ? "right" : "left", dx, duration);
+        if (_swipe_callback) {
+            _swipe_callback(direction);
+        }
+    } else if (abs(dy) > 30 && abs(dy) > abs(dx) && duration < 800) {
+        // Vertical swipe: +2 = down, -2 = up
+        int direction = (dy > 0) ? 2 : -2;
+        Serial.printf("[Touch] Swipe %s (dy=%d, duration=%lums)\n",
+                     direction > 0 ? "down" : "up", dy, duration);
         if (_swipe_callback) {
             _swipe_callback(direction);
         }

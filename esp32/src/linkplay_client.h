@@ -37,8 +37,8 @@ int linkplay_get_volume();
 // Set sleep timer (0 = cancel, >0 = minutes)
 bool linkplay_set_sleep_timer(int minutes);
 
-// Get current status (returns JSON string)
-String linkplay_get_status();
+// Get current status (returns JSON string). retries=0 for background polling.
+String linkplay_get_status(int retries = 1);
 
 // Process serial commands for testing (W:ip, P:url, S, V:vol, ?)
 void linkplay_serial_task();

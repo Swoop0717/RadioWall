@@ -3,65 +3,27 @@
  *
  * RLE Format: Byte pairs [count, color]
  * - count: Number of pixels
- * - color: 0 = black (ocean), 1 = white (land)
+ * - color: 0 = black (ocean), 1 = white (land), 2 = gray (border)
  *
- * IMPORTANT: To use real map data instead of test patterns:
- * 1. Install Python dependencies: pip install -r ../tools/requirements.txt
- * 2. Generate map bitmaps: python ../tools/generate_map_bitmaps.py
- * 3. Uncomment the include below and comment out the stub patterns
+ * 1x maps: stored in PROGMEM (world_map_data.h)
+ * 2x/3x maps: stored in LittleFS (/maps/zoom2.bin, /maps/zoom3.bin)
  */
 
 #include "world_map.h"
+#include <LittleFS.h>
 
-// Real map data generated from Natural Earth coastlines
+// Real map data generated from Natural Earth
 #include "world_map_data.h"
 
-// Stub test patterns disabled (using real map data now)
-#if 0  // Stub test patterns (will be replaced by real coastline data)
-// Format: RLE compressed (count, color pairs)
-// These patterns are VERY distinct to make slice changes obvious
-
-// Test pattern 1: Wide vertical stripes (Americas)
-const uint8_t map_slice_americas[] PROGMEM = {
-    100, 1,  // 100 white pixels (wide stripe)
-    100, 0,  // 100 black pixels (wide stripe)
-    0, 0     // End marker
-};
-const size_t map_slice_americas_size = sizeof(map_slice_americas);
-
-// Test pattern 2: Small checkerboard (Europe/Africa) - DEFAULT SLICE
-const uint8_t map_slice_europe_africa[] PROGMEM = {
-    20, 1, 20, 0,  // Medium alternating pattern
-    0, 0
-};
-const size_t map_slice_europe_africa_size = sizeof(map_slice_europe_africa);
-
-// Test pattern 3: Large checkerboard blocks (Asia)
-const uint8_t map_slice_asia[] PROGMEM = {
-    50, 1, 50, 0,  // Large alternating blocks
-    0, 0
-};
-const size_t map_slice_asia_size = sizeof(map_slice_asia);
-
-// Test pattern 4: Sparse dots (Pacific)
-const uint8_t map_slice_pacific[] PROGMEM = {
-    3, 1, 30, 0,  // Small dots with lots of space
-    0, 0
-};
-const size_t map_slice_pacific_size = sizeof(map_slice_pacific);
-#endif  // End of stub patterns
+// 3-color mapping: ocean=black, land=white, border=gray
+static inline uint16_t rle_color(uint8_t c) {
+    if (c == 0) return BLACK;
+    if (c == 2) return 0x8410;  // Mid gray for borders
+    return WHITE;               // Land
+}
 
 /**
- * Draw RLE-compressed map bitmap at specified position
- *
- * OPTIMIZED: Uses drawFastHLine() instead of drawPixel() for much faster rendering.
- * Draws horizontal line segments for each RLE run, splitting across rows as needed.
- *
- * @param gfx Display object
- * @param rle_data Pointer to PROGMEM RLE data
- * @param size Size of RLE data in bytes
- * @param offset_x X offset on display
- * @param offset_y Y offset on display
+ * Draw RLE-compressed map bitmap from PROGMEM at specified position
  */
 void draw_map_slice(Arduino_GFX* gfx, const uint8_t* rle_data, size_t size, int offset_x, int offset_y) {
     unsigned long start = millis();
@@ -73,34 +35,23 @@ void draw_map_slice(Arduino_GFX* gfx, const uint8_t* rle_data, size_t size, int 
         uint8_t count = pgm_read_byte(&rle_data[idx++]);
         uint8_t color = pgm_read_byte(&rle_data[idx++]);
 
-        // End marker
-        if (count == 0 && color == 0) {
-            break;
-        }
+        if (count == 0 && color == 0) break;
 
-        uint16_t display_color = color ? WHITE : BLACK;
+        uint16_t display_color = rle_color(color);
         int remaining = count;
 
-        // Draw horizontal lines, splitting across rows as needed
         while (remaining > 0 && y < MAP_HEIGHT) {
             int pixels_this_row = min(remaining, MAP_WIDTH - x);
-
-            // Draw horizontal line segment
             gfx->drawFastHLine(offset_x + x, offset_y + y, pixels_this_row, display_color);
-
             remaining -= pixels_this_row;
             x += pixels_this_row;
-
-            if (x >= MAP_WIDTH) {
-                x = 0;
-                y++;
-            }
+            if (x >= MAP_WIDTH) { x = 0; y++; }
         }
 
         if (y >= MAP_HEIGHT) break;
     }
 
-    // Fill remainder with black (ocean) using fast horizontal lines
+    // Fill remainder with black
     while (y < MAP_HEIGHT) {
         if (x < MAP_WIDTH) {
             gfx->drawFastHLine(offset_x + x, offset_y + y, MAP_WIDTH - x, BLACK);
@@ -113,22 +64,108 @@ void draw_map_slice(Arduino_GFX* gfx, const uint8_t* rle_data, size_t size, int 
 }
 
 /**
- * Draw slice label in corner
+ * Draw RLE-compressed map bitmap from a LittleFS zoom binary file.
  *
- * @param gfx Display object
- * @param name Slice name (e.g., "Europe/Africa")
- * @param label Slice longitude range (e.g., "-30° to 60°")
+ * File format:
+ *   Header (8 bytes): 'Z','M', version, zoom, slices, cols, rows, reserved
+ *   Index (6 bytes per bitmap): offset(uint32_le), size(uint16_le)
+ *   Data: RLE bytes
+ *
+ * Bitmap index = slice * cols * rows + col * rows + row
+ */
+bool draw_map_from_file(Arduino_GFX* gfx, const char* path,
+                        int zoom_level, int slice_idx, int col, int row,
+                        int offset_x, int offset_y) {
+    unsigned long start = millis();
+
+    File f = LittleFS.open(path, "r");
+    if (!f) {
+        Serial.printf("[WorldMap] Failed to open %s\n", path);
+        return false;
+    }
+
+    // Read and validate header
+    uint8_t header[8];
+    if (f.read(header, 8) != 8 || header[0] != 'Z' || header[1] != 'M') {
+        Serial.println("[WorldMap] Invalid zoom file header");
+        f.close();
+        return false;
+    }
+
+    int file_zoom = header[3];
+    int file_cols = header[5];
+    int file_rows = header[6];
+
+    if (file_zoom != zoom_level) {
+        Serial.printf("[WorldMap] Zoom mismatch: file=%d, expected=%d\n", file_zoom, zoom_level);
+        f.close();
+        return false;
+    }
+
+    // Calculate bitmap index
+    int bitmap_idx = slice_idx * file_cols * file_rows + col * file_rows + row;
+    int index_offset = 8 + bitmap_idx * 6;
+
+    // Read index entry
+    f.seek(index_offset);
+    uint8_t idx_buf[6];
+    if (f.read(idx_buf, 6) != 6) {
+        Serial.println("[WorldMap] Failed to read index entry");
+        f.close();
+        return false;
+    }
+
+    uint32_t data_offset = idx_buf[0] | (idx_buf[1] << 8) | (idx_buf[2] << 16) | (idx_buf[3] << 24);
+    uint16_t data_size = idx_buf[4] | (idx_buf[5] << 8);
+
+    // Seek to bitmap data and draw
+    f.seek(data_offset);
+
+    int x = 0, y = 0;
+    uint16_t bytes_read = 0;
+
+    while (bytes_read < data_size - 1 && y < MAP_HEIGHT) {
+        uint8_t count = f.read();
+        uint8_t color = f.read();
+        bytes_read += 2;
+
+        if (count == 0 && color == 0) break;
+
+        uint16_t display_color = rle_color(color);
+        int remaining = count;
+
+        while (remaining > 0 && y < MAP_HEIGHT) {
+            int pixels_this_row = min(remaining, MAP_WIDTH - x);
+            gfx->drawFastHLine(offset_x + x, offset_y + y, pixels_this_row, display_color);
+            remaining -= pixels_this_row;
+            x += pixels_this_row;
+            if (x >= MAP_WIDTH) { x = 0; y++; }
+        }
+    }
+
+    // Fill remainder with black
+    while (y < MAP_HEIGHT) {
+        if (x < MAP_WIDTH) {
+            gfx->drawFastHLine(offset_x + x, offset_y + y, MAP_WIDTH - x, BLACK);
+        }
+        x = 0;
+        y++;
+    }
+
+    f.close();
+    Serial.printf("[WorldMap] Zoom %dx [%d,%d] drawn in %lu ms\n",
+                  zoom_level, col, row, millis() - start);
+    return true;
+}
+
+/**
+ * Draw slice label in corner
  */
 void draw_slice_label(Arduino_GFX* gfx, const char* name, const char* label) {
-    // Draw label in top-left corner (portrait mode)
     gfx->setTextSize(1);
     gfx->setTextColor(CYAN, BLACK);
-
-    // Slice name
     gfx->setCursor(5, 5);
     gfx->print(name);
-
-    // Longitude range
     gfx->setCursor(5, 15);
     gfx->print(label);
 }

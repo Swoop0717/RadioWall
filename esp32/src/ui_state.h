@@ -15,6 +15,7 @@ enum ViewMode {
     VIEW_MENU,
     VIEW_VOLUME,
     VIEW_FAVORITES,
+    VIEW_HISTORY,
     VIEW_SETTINGS
 };
 
@@ -37,12 +38,17 @@ private:
     char station_name[64];
     char location[64];
     char status_text[32];
+    char wiim_title[64];       // Track title from WiiM getPlayerStatus
+    char wiim_artist[64];      // Artist from WiiM getPlayerStatus
     ViewMode _view_mode;
     int _volume;
     bool _paused;
     int _sleep_timer_minutes;  // 0 = off
     float _marker_lat, _marker_lon;
     bool _has_marker;
+    int _zoom_level;   // 1, 2, or 3
+    int _zoom_col;     // 0..(zoom-1), column within zoom grid
+    int _zoom_row;     // 0..(zoom-1), row within zoom grid
 
 public:
     UIState();
@@ -88,9 +94,32 @@ public:
     float get_marker_lat() const;
     float get_marker_lon() const;
 
+    // WiiM metadata (from getPlayerStatus polling)
+    void set_wiim_metadata(const char* title, const char* artist);
+    const char* get_wiim_title() const;
+    const char* get_wiim_artist() const;
+
     // Slice helpers
     int slice_index_for_lon(float lon) const;
     void set_slice_index(int idx);
+
+    // Zoom
+    void set_zoom_level(int level);
+    int get_zoom_level() const;
+    int get_zoom_col() const;
+    int get_zoom_row() const;
+
+    // Zoom navigation (returns true if position changed)
+    bool zoom_move_left();
+    bool zoom_move_right();
+    bool zoom_move_up();
+    bool zoom_move_down();
+
+    // Geographic bounds of current view (zoom-aware)
+    float get_view_lon_min() const;
+    float get_view_lon_max() const;
+    float get_view_lat_min() const;
+    float get_view_lat_max() const;
 };
 
 #endif // UI_STATE_H

@@ -36,6 +36,9 @@ void display_update_volume_bar(UIState* state);
 // Favorites view functions
 void display_show_favorites_view(UIState* state);
 
+// History view functions
+void display_show_history_view(UIState* state);
+
 // Settings view functions
 void display_show_settings_view(UIState* state);
 void display_update_status_bar_settings(UIState* state);

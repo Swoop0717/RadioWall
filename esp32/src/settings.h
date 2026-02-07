@@ -51,4 +51,8 @@ void settings_set_group_callback(GroupChangedCallback cb);
 // Get list of grouped device IPs (for boot rejoin)
 int settings_get_group_ips(char ips[][16], int max_count);
 
+// Zoom level (1, 2, or 3)
+int settings_get_zoom();
+void settings_set_zoom(int level, Arduino_GFX* gfx);
+
 #endif // SETTINGS_H

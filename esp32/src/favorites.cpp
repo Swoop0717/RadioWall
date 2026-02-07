@@ -6,32 +6,22 @@
  */
 
 #include "favorites.h"
+#include "theme.h"
 #include "Arduino_GFX_Library.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
 static const char* FAVORITES_FILE = "/favorites.json";
 
-// Layout constants (matching menu.cpp style)
+// Layout constants
 static const int TITLE_HEIGHT   = 40;
 static const int ITEM_HEIGHT    = 80;
 static const int ITEMS_START_Y  = TITLE_HEIGHT;
-static const int DISPLAY_WIDTH  = 180;
 static const int PLAY_ZONE_W    = 120;  // Left side: tap to play
 // Delete zone: 120-179 (60px wide)
 
 static const int PAGE_INDICATOR_Y = 530;
 static const int FAV_AREA_BOTTOM  = 520;
-
-// Colors
-static const uint16_t COLOR_BG        = 0x0000;  // BLACK
-static const uint16_t COLOR_TITLE     = 0x07FF;  // CYAN
-static const uint16_t COLOR_ITEM_TEXT = 0xFFFF;  // WHITE
-static const uint16_t COLOR_PLACE     = 0x8410;  // Mid gray
-static const uint16_t COLOR_DIVIDER   = 0x4208;  // Dark gray
-static const uint16_t COLOR_DELETE    = 0x8410;  // Gray for "x"
-static const uint16_t COLOR_DEL_BG    = 0x8000;  // Dark red highlight
-static const uint16_t COLOR_HIGHLIGHT = 0x0228;  // Dark teal
 
 // In-memory storage
 static FavoriteStation _favs[MAX_FAVORITES];
@@ -204,62 +194,67 @@ void favorites_next_page() {
 
 static void draw_item(Arduino_GFX* gfx, int slot, const FavoriteStation& fav) {
     int y_top = ITEMS_START_Y + slot * ITEM_HEIGHT;
+    int card_y = y_top + 3;
+    int card_h = ITEM_HEIGHT - 6;
 
-    // Station title (truncate to ~10 chars to fit play zone)
-    gfx->setTextSize(2);
-    gfx->setTextColor(COLOR_ITEM_TEXT);
-    gfx->setCursor(8, y_top + 15);
+    // Card background
+    gfx->fillRoundRect(TH_CARD_MARGIN, card_y, TH_CARD_W, card_h,
+                        TH_CORNER_R, TH_CARD);
 
-    // Truncate title to fit in play zone width (~10 chars at size 2)
-    char trunc_title[11];
-    strncpy(trunc_title, fav.title, 10);
-    trunc_title[10] = '\0';
+    // Station title (default font for char count)
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_TEXT);
+    gfx->setCursor(10, card_y + 16);
+
+    char trunc_title[19];
+    strncpy(trunc_title, fav.title, 18);
+    trunc_title[18] = '\0';
     gfx->print(trunc_title);
 
     // Place + country below title
-    gfx->setTextSize(1);
-    gfx->setTextColor(COLOR_PLACE);
-    gfx->setCursor(8, y_top + 50);
+    gfx->setTextColor(TH_TEXT_SEC);
+    gfx->setCursor(10, card_y + 36);
     char place_str[20];
     snprintf(place_str, sizeof(place_str), "%.*s, %s",
              12, fav.place, fav.country);
     gfx->print(place_str);
 
     // Delete "x" on right side
-    gfx->setTextSize(2);
-    gfx->setTextColor(COLOR_DELETE);
-    gfx->setCursor(142, y_top + 28);
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_TEXT_DIM);
+    gfx->setCursor(148, card_y + card_h / 2 + 5);
     gfx->print("x");
+    gfx->setFont(NULL);
 
     // Vertical divider between play and delete zones
-    gfx->drawFastVLine(PLAY_ZONE_W, y_top, ITEM_HEIGHT, COLOR_DIVIDER);
-
-    // Horizontal divider at bottom
-    gfx->drawFastHLine(5, y_top + ITEM_HEIGHT - 1, DISPLAY_WIDTH - 10, COLOR_DIVIDER);
+    gfx->drawFastVLine(PLAY_ZONE_W, card_y + 6, card_h - 12, TH_DIVIDER);
 }
 
 void favorites_render(Arduino_GFX* gfx, int page) {
     if (!gfx) return;
 
     // Clear main area
-    gfx->fillRect(0, 0, DISPLAY_WIDTH, FAV_AREA_BOTTOM + 60, COLOR_BG);
+    gfx->fillRect(0, 0, TH_DISPLAY_W, FAV_AREA_BOTTOM + 60, TH_BG);
 
-    // Title
-    gfx->setTextSize(2);
-    gfx->setTextColor(COLOR_TITLE);
-    gfx->setCursor(10, 12);
+    // Title (FreeSansBold)
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(10, FONT_SANS_ASCENT + 8);
     if (_fav_count > 0) {
         gfx->printf("FAVS (%d)", _fav_count);
     } else {
-        gfx->print("FAVS");
+        gfx->print("FAVORITES");
     }
+    gfx->setFont(NULL);
 
     // Divider under title
-    gfx->drawFastHLine(5, TITLE_HEIGHT - 1, DISPLAY_WIDTH - 10, COLOR_DIVIDER);
+    gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
 
     if (_fav_count == 0) {
         gfx->setTextSize(1);
-        gfx->setTextColor(COLOR_PLACE);
+        gfx->setTextColor(TH_TEXT_DIM);
         gfx->setCursor(25, 200);
         gfx->print("No favorites yet");
         gfx->setCursor(15, 230);
@@ -281,7 +276,7 @@ void favorites_render(Arduino_GFX* gfx, int page) {
     int total_pages = favorites_total_pages();
     if (total_pages > 1) {
         gfx->setTextSize(1);
-        gfx->setTextColor(COLOR_PLACE);
+        gfx->setTextColor(TH_TEXT_SEC);
         gfx->setCursor(55, PAGE_INDICATOR_Y);
         gfx->printf("< %d / %d >", page + 1, total_pages);
     }
@@ -319,11 +314,16 @@ bool favorites_handle_touch(int x, int y, Arduino_GFX* gfx) {
         Serial.printf("[Favs] Delete tap: %s\n", _favs[global_idx].title);
         if (gfx) {
             int y_top = ITEMS_START_Y + slot * ITEM_HEIGHT;
-            gfx->fillRect(PLAY_ZONE_W, y_top, DISPLAY_WIDTH - PLAY_ZONE_W, ITEM_HEIGHT, COLOR_DEL_BG);
-            gfx->setTextSize(2);
-            gfx->setTextColor(COLOR_ITEM_TEXT);
-            gfx->setCursor(132, y_top + 28);
+            int card_y = y_top + 3;
+            int card_h = ITEM_HEIGHT - 6;
+            gfx->fillRoundRect(PLAY_ZONE_W + 1, card_y, TH_CARD_W - PLAY_ZONE_W + TH_CARD_MARGIN,
+                                card_h, TH_CORNER_R, TH_DANGER);
+            gfx->setFont(&FreeSansBold10pt7b);
+            gfx->setTextSize(1);
+            gfx->setTextColor(TH_TEXT);
+            gfx->setCursor(132, card_y + card_h / 2 + 5);
             gfx->print("DEL");
+            gfx->setFont(NULL);
             delay(150);
         }
         if (_delete_cb) {
@@ -334,13 +334,16 @@ bool favorites_handle_touch(int x, int y, Arduino_GFX* gfx) {
         Serial.printf("[Favs] Play tap: %s\n", _favs[global_idx].title);
         if (gfx) {
             int y_top = ITEMS_START_Y + slot * ITEM_HEIGHT;
-            gfx->fillRect(0, y_top, PLAY_ZONE_W, ITEM_HEIGHT, COLOR_HIGHLIGHT);
-            gfx->setTextSize(2);
-            gfx->setTextColor(COLOR_ITEM_TEXT);
-            gfx->setCursor(8, y_top + 15);
-            char trunc_title[11];
-            strncpy(trunc_title, _favs[global_idx].title, 10);
-            trunc_title[10] = '\0';
+            int card_y = y_top + 3;
+            int card_h = ITEM_HEIGHT - 6;
+            gfx->fillRoundRect(TH_CARD_MARGIN, card_y, PLAY_ZONE_W - TH_CARD_MARGIN,
+                                card_h, TH_CORNER_R, TH_CARD_HI);
+            gfx->setTextSize(1);
+            gfx->setTextColor(TH_TEXT);
+            gfx->setCursor(10, card_y + 16);
+            char trunc_title[19];
+            strncpy(trunc_title, _favs[global_idx].title, 18);
+            trunc_title[18] = '\0';
             gfx->print(trunc_title);
             delay(80);
         }

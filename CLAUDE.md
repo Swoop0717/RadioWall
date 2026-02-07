@@ -54,7 +54,11 @@ RadioWall is an interactive physical world map that plays local radio stations w
 | LinkPlay Client | ✅ WiiM control via HTTPS (port 443) |
 | Physical Button | ✅ Multi-action: short/long/double-tap |
 | Touch Buttons | ✅ STOP and NEXT in status bar |
-| Map Rendering | ✅ Optimized with drawFastHLine (~4s) |
+| Map Rendering | ✅ Optimized with drawFastHLine, zoomable (1x/2x/3x) |
+| UI Theme | ✅ Custom fonts (FreeSansBold), rounded cards, icons |
+| Favorites | ✅ LittleFS persistence, paginated list, play/delete |
+| History | ✅ Auto-records last 20 stations, deduplication |
+| Settings | ✅ mDNS device discovery, multiroom grouping, zoom level |
 | End-to-End Flow | ✅ Touch → Places → Radio.garden → WiiM |
 | Server (Docker) | ⏸️ Not needed (standalone mode) |
 | USB Touch Panel | 🔧 Skeleton, waiting for OTG adapter |
@@ -74,7 +78,10 @@ RadioWall is an interactive physical world map that plays local radio stations w
 | Menu → Pause/Resume | Toggle pause/resume |
 | Menu → Sleep Timer | Cycle: Off/15/30/60/90 min |
 | Menu → Favorites | View/play/delete saved stations |
+| Menu → History | View/replay last 20 stations played |
+| Menu → Settings | WiiM device discovery, zoom level, multiroom |
 | Favorites → ADD | Save currently playing station |
+| History → CLEAR | Wipe all playback history |
 
 ### TODO: Prototype 2 (External Touch Panel)
 
@@ -201,8 +208,11 @@ mosquitto_pub -t "radiowall/command" -m '{"cmd":"stop"}'
 | `places_db.cpp/h` | Places database from LittleFS |
 | `ui_state.cpp/h` | Slice selection, playback state, marker tracking |
 | `world_map.cpp/h` | RLE bitmap decompression and optimized drawing |
-| `menu.cpp/h` | Touch menu system (volume, pause, favorites, sleep timer) |
+| `menu.cpp/h` | Touch menu system (volume, pause, favorites, history, sleep, settings) |
 | `favorites.cpp/h` | Favorites storage (LittleFS JSON), rendering, touch |
+| `history.cpp/h` | Playback history (ring buffer, LittleFS, auto-record, dedup) |
+| `settings.cpp/h` | WiiM device discovery (mDNS), multiroom, zoom level |
+| `theme.h` | Centralized UI theme: colors, fonts, icons, layout constants |
 | `button_handler.cpp/h` | Multi-action button (short/long/double-tap) |
 | `pins_config.h` | Hardware pin definitions |
 | `config.h` | WiFi, WiiM IP settings (git-ignored) |
@@ -528,6 +538,13 @@ RadioWall/
 │       ├── ui_state.cpp/h
 │       ├── world_map.cpp/h
 │       ├── world_map_data.h        # Generated
+│       ├── menu.cpp/h              # 6-item touch menu
+│       ├── favorites.cpp/h         # Favorites (LittleFS JSON)
+│       ├── history.cpp/h           # Playback history (ring buffer)
+│       ├── settings.cpp/h          # Device discovery, multiroom, zoom
+│       ├── theme.h                 # UI theme: colors, fonts, icons
+│       ├── FreeSansBold10pt7b.h    # Custom font (titles, buttons)
+│       ├── FreeSerifBoldItalic12pt7b.h  # Custom font (splash)
 │       ├── button_handler.cpp/h
 │       ├── pins_config.h
 │       └── config.example.h
@@ -751,14 +768,9 @@ Many small cities have only 1 station in Radio.garden. NEXT will immediately hop
 - Stored as JSON on LittleFS (`/favorites.json`)
 - Playing a favorite auto-switches to correct map slice + shows marker
 
-#### 2. Playback History with Replay
+#### ~~2. Playback History with Replay~~ ✅ IMPLEMENTED
 
-Track recently played stations for quick replay:
-
-- **History buffer**: Last 10-20 stations in RAM
-- **UI access**: Touch gesture (swipe down?) or long-press combo
-- **Serial command**: `H` to dump history, `H:3` to replay #3
-- **Persistence**: Optional save to LittleFS on stop
+Implemented in `history.cpp/h`. Ring buffer of 20 stations, auto-recorded on play, deduplication, LittleFS persistence (`/history.json`), paginated list view with tap-to-replay. Accessible via Menu → History.
 
 #### 3. Enhanced Playback Info (LinkPlay getPlayerStatus)
 
@@ -810,26 +822,9 @@ Show serial-style logs on the ESP32 display:
 - **Use case**: Debugging without laptop connected
 - **Implementation**: Ring buffer capturing Serial.printf() output
 
-#### 7. Network Scan for WiiM Devices
+#### ~~7. Network Scan for WiiM Devices~~ ✅ IMPLEMENTED
 
-Auto-discover WiiM devices on the network:
-
-- **SSDP**: Search for `urn:schemas-upnp-org:device:MediaRenderer:1`
-- **mDNS**: Look for `_linkplay._tcp` service
-- **UI**: Show list of found devices on first boot / config menu
-- **Storage**: Save selected device IP to NVS/LittleFS
-
-```cpp
-// SSDP discovery (simplified)
-WiFiUDP udp;
-udp.beginPacket("239.255.255.250", 1900);
-udp.print("M-SEARCH * HTTP/1.1\r\n"
-          "HOST: 239.255.255.250:1900\r\n"
-          "MAN: \"ssdp:discover\"\r\n"
-          "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n");
-udp.endPacket();
-// Parse responses for WiiM devices
-```
+Implemented in `settings.cpp/h`. Uses ESPmDNS to query `_linkplay._tcp` service. Shows discovered devices in Settings screen. Tap to select primary device, right zone to toggle multiroom grouping. Persisted to `/settings.json`.
 
 #### 8. Distance Display
 
@@ -929,30 +924,13 @@ Play short audio notifications without interrupting main stream:
 
 ### Planned Features (Medium-term)
 
-#### 16. Closeup Regional Maps
+#### ~~16. Closeup Regional Maps~~ ✅ IMPLEMENTED
 
-High-detail maps for radio-dense regions:
+Implemented as zoomable maps (1x/2x/3x) in `world_map.cpp` and `generate_map_bitmaps.py`. Each zoom level subdivides slices into tiles with country borders (Natural Earth 1:50m). Zoom level configurable in Settings screen. Map files stored in LittleFS `/maps/zoom2.bin` and `/maps/zoom3.bin`.
 
-| Region | Coverage | Why |
-|--------|----------|-----|
-| Europe | -10° to 40° lon, 35° to 70° lat | Highest radio density |
-| East Asia | 100° to 150° lon, 20° to 50° lat | Japan, Korea, China |
-| Northeast US | -85° to -65° lon, 35° to 48° lat | Dense metro areas |
+#### ~~17. Multiroom Support (LinkPlay)~~ ✅ IMPLEMENTED
 
-- **Gesture**: Double-tap on region to zoom in
-- **Storage**: Additional bitmap per region (~5KB each)
-- **Navigation**: Swipe to pan, button to zoom out
-
-#### 17. Multiroom Support (LinkPlay)
-
-Control multiple WiiM devices as a group:
-
-- **API commands**:
-  - `multiroom:getSlaveList` - Get paired speakers
-  - `multiroom:SlaveKickout:<ip>` - Remove from group
-  - `multiroom:SlaveVolume:<ip>:<vol>` - Per-speaker volume
-- **UI**: Select which rooms to play to
-- **Use case**: Whole-house radio
+Implemented in `settings.cpp/h` and `linkplay_client.cpp`. Settings screen shows discovered devices with a "G" toggle for grouping. Grouped device IPs persist in `/settings.json`. `linkplay_client.cpp` sends play commands to all grouped devices.
 
 ### Future Features (Long-term)
 

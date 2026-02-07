@@ -1,18 +1,20 @@
 /**
  * AMOLED display control for RadioWall on T-Display-S3-Long.
  *
- * Uses Arduino_GFX library with AXS15231B QSPI display controller (640×180).
+ * Uses Arduino_GFX library with AXS15231B QSPI display controller (640x180).
  * Based on working LILYGO GFX_AXS15231B_Image example.
  */
 
 #include "display.h"
 #include "config.h"
 #include "pins_config.h"
+#include "theme.h"
 #include "Arduino_GFX_Library.h"
 #include "ui_state.h"
 #include "world_map.h"
 #include "menu.h"
 #include "favorites.h"
+#include "history.h"
 #include "settings.h"
 #include "radio_client.h"
 
@@ -40,6 +42,19 @@ static char _location[128] = "";
 static char _country[8] = "";
 static char _status[32] = "idle";
 
+// Helper: draw a rounded button in the status bar
+static void draw_status_button(int x, int y, int w, int h, uint16_t text_color, const char* label) {
+    gfx->fillRoundRect(x, y, w, h, TH_CORNER_R, TH_BTN);
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(text_color);
+    // Center text in button
+    int text_x = x + (w - strlen(label) * 10) / 2;
+    gfx->setCursor(text_x, y + h / 2 + 5);
+    gfx->print(label);
+    gfx->setFont(NULL);
+}
+
 void display_init() {
     Serial.println("[Display] Initializing Arduino_GFX AXS15231B display...");
 
@@ -55,7 +70,7 @@ void display_init() {
         LCD_SDIO1 /* SDIO1 */, LCD_SDIO2 /* SDIO2 */, LCD_SDIO3 /* SDIO3 */);
 
     // Create AXS15231 display driver
-    // Rotation 0 = Portrait (180×640) - STABLE WORKING CONFIGURATION
+    // Rotation 0 = Portrait (180x640) - STABLE WORKING CONFIGURATION
     // NOTE: Rotations 1 and 3 cause fading/crashing issues
     gfx = new Arduino_AXS15231(bus, LCD_RST /* RST */, 0 /* rotation */,
                                false /* IPS */, LCD_WIDTH, LCD_HEIGHT);
@@ -70,15 +85,17 @@ void display_init() {
         delay(3);
     }
 
-    // Show RadioWall splash (landscape coordinates: 640 wide × 180 tall)
-    gfx->setCursor(220, 60);
-    gfx->setTextSize(2);
-    gfx->setTextColor(CYAN);
-    gfx->println("RadioWall");
+    // Show RadioWall splash (landscape coordinates: 640 wide x 180 tall)
+    gfx->setFont(&FreeSerifBoldItalic12pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(200, 80);
+    gfx->print("RadioWall");
+    gfx->setFont(NULL);
 
     gfx->setCursor(120, 100);
     gfx->setTextSize(1);
-    gfx->setTextColor(WHITE);
+    gfx->setTextColor(TH_TEXT);
     gfx->println("Touch the world map to play radio");
 
     _last_activity = millis();
@@ -113,26 +130,27 @@ void display_show_nowplaying(const char* station, const char* location, const ch
         gfx->fillScreen(BLACK);
 
         // Title
-        gfx->setCursor(10, 50);
+        gfx->setFont(&FreeSansBold10pt7b);
         gfx->setTextSize(1);
-        gfx->setTextColor(CYAN);
-        gfx->println("NOW PLAYING:");
+        gfx->setTextColor(TH_ACCENT);
+        gfx->setCursor(10, 50);
+        gfx->print("NOW PLAYING:");
+        gfx->setFont(NULL);
 
-        // Station name (larger)
+        // Station name
         gfx->setCursor(10, 80);
-        gfx->setTextSize(2);
-        gfx->setTextColor(WHITE);
+        gfx->setTextSize(1);
+        gfx->setTextColor(TH_TEXT);
         gfx->println(station);
 
         // Location
         gfx->setCursor(10, 110);
-        gfx->setTextSize(1);
-        gfx->setTextColor(GREEN);
+        gfx->setTextColor(TH_PLAYING);
         gfx->println(location);
 
         // Country
         gfx->setCursor(10, 130);
-        gfx->setTextColor(YELLOW);
+        gfx->setTextColor(TH_WARNING);
         gfx->println(country);
     }
 
@@ -161,11 +179,13 @@ void display_show_connecting() {
 
     if (gfx) {
         gfx->fillScreen(BLACK);
-        // Landscape coordinates: 640 wide × 180 tall
-        gfx->setCursor(200, 80);
-        gfx->setTextSize(2);
-        gfx->setTextColor(YELLOW);
-        gfx->println("Connecting...");
+        // Landscape coordinates: 640 wide x 180 tall
+        gfx->setFont(&FreeSansBold10pt7b);
+        gfx->setTextSize(1);
+        gfx->setTextColor(TH_WARNING);
+        gfx->setCursor(180, 90);
+        gfx->print("Connecting...");
+        gfx->setFont(NULL);
     }
 }
 
@@ -190,8 +210,6 @@ void display_draw_touch_feedback(int x, int y, UIState* state) {
     const int mark_size = 4;  // Half-size of the X
 
     // Clear previous marker by drawing over it with black
-    // Note: This works well for ocean areas but may leave artifacts on land
-    // A full map refresh only happens on region change, which is acceptable
     if (_prev_marker_x >= 0 && _prev_marker_y >= 0) {
         gfx->drawLine(_prev_marker_x - mark_size, _prev_marker_y - mark_size,
                       _prev_marker_x + mark_size, _prev_marker_y + mark_size, BLACK);
@@ -214,25 +232,42 @@ Arduino_GFX* display_get_gfx() {
 
 // Map view functions
 
-/**
- * Show full map view (map + status bar)
- */
+// Draw map area using current zoom level
+static void draw_current_map(UIState* state) {
+    int zoom = state->get_zoom_level();
+    if (zoom <= 1) {
+        MapSlice& slice = state->get_current_slice();
+        if (slice.bitmap && slice.bitmap_size > 0) {
+            draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
+        }
+    } else {
+        const char* path = (zoom == 2) ? "/maps/zoom2.bin" : "/maps/zoom3.bin";
+        if (!draw_map_from_file(gfx, path, zoom,
+                                state->get_current_slice_index(),
+                                state->get_zoom_col(),
+                                state->get_zoom_row(), 0, 0)) {
+            // Fallback: draw 1x if zoom file missing
+            MapSlice& slice = state->get_current_slice();
+            if (slice.bitmap && slice.bitmap_size > 0) {
+                draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
+            }
+        }
+    }
+}
+
 void display_show_map_view(UIState* state) {
     if (!gfx) {
         Serial.println("[Display] ERROR: gfx is null!");
         return;
     }
 
-    Serial.println("[Display] Showing portrait map view (180×640)...");
+    Serial.println("[Display] Showing portrait map view (180x640)...");
 
     // Clear screen with black
     gfx->fillScreen(BLACK);
 
-    // Draw the map slice at top-left (160x560 bitmap)
-    MapSlice& slice = state->get_current_slice();
-    if (slice.bitmap && slice.bitmap_size > 0) {
-        draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
-    }
+    // Draw the map slice at top-left
+    draw_current_map(state);
 
     // Draw marker if set
     if (state->has_marker()) {
@@ -251,13 +286,12 @@ void display_show_map_view(UIState* state) {
 void display_update_status_bar(UIState* state) {
     if (!gfx) return;
 
-    // Portrait mode: 180 wide × 640 tall
+    // Portrait mode: 180 wide x 640 tall
     const int STATUS_Y = 580;  // Status bar starts at y=580
     const int STATUS_H = 60;    // Status bar height
-    const int STATUS_W = 180;   // Display width
 
     // Clear status bar area
-    gfx->fillRect(0, STATUS_Y, STATUS_W, STATUS_H, BLACK);
+    gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, STATUS_H, TH_BG);
 
     gfx->setTextSize(1);
 
@@ -285,41 +319,50 @@ void display_update_status_bar(UIState* state) {
             line1[27] = '.';
             line1[28] = '\0';
         }
-        gfx->setTextColor(GREEN);
+        gfx->setTextColor(TH_PLAYING);
         gfx->setCursor(5, STATUS_Y + 5);
         gfx->print(line1);
     } else {
         MapSlice& slice = state->get_current_slice();
-        gfx->setTextColor(CYAN);
+        gfx->setTextColor(TH_ACCENT);
         gfx->setCursor(5, STATUS_Y + 5);
-        gfx->print(slice.name);
+        int zoom = state->get_zoom_level();
+        if (zoom > 1) {
+            char zoom_label[28];
+            // Compact position labels
+            static const char* pos2x[] = {"NW", "NE", "SW", "SE"};
+            int col = state->get_zoom_col();
+            int row = state->get_zoom_row();
+            if (zoom == 2) {
+                snprintf(zoom_label, sizeof(zoom_label), "%s 2x %s",
+                         slice.name, pos2x[col * 2 + row]);
+            } else {
+                snprintf(zoom_label, sizeof(zoom_label), "%s 3x [%d,%d]",
+                         slice.name, col, row);
+            }
+            gfx->print(zoom_label);
+        } else {
+            gfx->print(slice.name);
+        }
     }
 
-    // Line 2: Station name when playing, else tap prompt
+    // Line 2: Station name or idle text
     if (state->get_is_playing() && status_text[0] == '\0') {
-        char sname[29];
-        strncpy(sname, state->get_station_name(), 28);
-        sname[28] = '\0';
-        gfx->setTextColor(WHITE);
+        char line2[29];
+        strncpy(line2, state->get_station_name(), 28);
+        line2[28] = '\0';
+        gfx->setTextColor(TH_TEXT);
         gfx->setCursor(5, STATUS_Y + 20);
-        gfx->print(sname);
+        gfx->print(line2);
     } else if (!state->get_is_playing() && status_text[0] == '\0') {
-        gfx->setTextColor(WHITE);
+        gfx->setTextColor(TH_TEXT_SEC);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print("Tap map to play");
     }
 
-    // Line 3: STOP and NEXT buttons (90px each)
-    // STOP button (left half: 0-89)
-    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);  // Dark blue
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(25, STATUS_Y + 43);
-    gfx->print("STOP");
-
-    // NEXT button (right half: 90-179)
-    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);  // Dark blue
-    gfx->setCursor(115, STATUS_Y + 43);
-    gfx->print("NEXT");
+    // Line 3: STOP and NEXT buttons (90px each, rounded)
+    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_TEXT, "STOP");
+    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "NEXT");
 }
 
 /**
@@ -333,11 +376,8 @@ void display_refresh_map_only(UIState* state) {
     // Clear map area (0 to 580) with black
     gfx->fillRect(0, 0, 180, 580, BLACK);
 
-    // Draw the map slice at top-left (160x560 bitmap)
-    MapSlice& slice = state->get_current_slice();
-    if (slice.bitmap && slice.bitmap_size > 0) {
-        draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
-    }
+    // Draw the map using current zoom level
+    draw_current_map(state);
 
     Serial.println("[Display] Map refresh complete");
 }
@@ -364,46 +404,32 @@ void display_update_status_bar_menu(UIState* state) {
 
     const int STATUS_Y = 580;
     const int STATUS_H = 60;
-    const int STATUS_W = 180;
 
-    gfx->fillRect(0, STATUS_Y, STATUS_W, STATUS_H, BLACK);
+    gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, STATUS_H, TH_BG);
     gfx->setTextSize(1);
 
     // Line 1: Context label
-    gfx->setTextColor(CYAN);
+    gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(5, STATUS_Y + 5);
     gfx->print("Menu");
 
-    // Line 2: Playback info if playing
+    // Line 2: Station name
     if (state->get_is_playing()) {
-        char info[32];
-        strncpy(info, state->get_station_name(), sizeof(info) - 1);
-        info[sizeof(info) - 1] = '\0';
-        if (strlen(info) > 28) {
-            info[25] = '.';
-            info[26] = '.';
-            info[27] = '.';
-            info[28] = '\0';
-        }
-        gfx->setTextColor(GREEN);
+        char info[29];
+        strncpy(info, state->get_station_name(), 28);
+        info[28] = '\0';
+        gfx->setTextColor(TH_PLAYING);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print(info);
     } else {
-        gfx->setTextColor(WHITE);
+        gfx->setTextColor(TH_TEXT_SEC);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print("Not playing");
     }
 
     // Line 3: BACK (left) + STOP (right)
-    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(YELLOW);
-    gfx->setCursor(25, STATUS_Y + 43);
-    gfx->print("BACK");
-
-    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(115, STATUS_Y + 43);
-    gfx->print("STOP");
+    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "STOP");
 }
 
 // ------------------------------------------------------------------
@@ -427,35 +453,23 @@ void display_show_volume_view(UIState* state) {
 
     gfx->fillScreen(BLACK);
 
-    // Title
-    gfx->setTextSize(2);
-    gfx->setTextColor(CYAN);
-    gfx->setCursor(40, 10);
+    // Title (FreeSansBold)
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(40, FONT_SANS_ASCENT + 10);
     gfx->print("Volume");
+    gfx->setFont(NULL);
 
     // Draw the slider
     display_update_volume_bar(state);
 
     // Status bar: BACK + MUTE
     const int STATUS_Y = 580;
-    gfx->fillRect(0, STATUS_Y, 180, 60, BLACK);
-    gfx->setTextSize(1);
+    gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
 
-    // Line 1: Current volume as text
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(5, STATUS_Y + 5);
-    gfx->printf("Vol: %d%%", state->get_volume());
-
-    // Line 3: BACK (left) + MUTE (right)
-    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(YELLOW);
-    gfx->setCursor(25, STATUS_Y + 43);
-    gfx->print("BACK");
-
-    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(115, STATUS_Y + 43);
-    gfx->print("MUTE");
+    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "MUTE");
 
     Serial.println("[Display] Volume view complete!");
 }
@@ -472,37 +486,33 @@ void display_update_volume_bar(UIState* state) {
     int fill_h = (int)((vol / 100.0f) * VOL_SLIDER_H);
     int fill_y = VOL_SLIDER_BOTTOM - fill_h;
 
-    // Empty part (dark gray)
+    // Empty part (dark card color)
     if (fill_y > VOL_SLIDER_TOP) {
-        gfx->fillRect(VOL_SLIDER_X, VOL_SLIDER_TOP, VOL_SLIDER_W,
-                       fill_y - VOL_SLIDER_TOP, 0x2104);  // Dark gray
+        gfx->fillRoundRect(VOL_SLIDER_X, VOL_SLIDER_TOP, VOL_SLIDER_W,
+                           fill_y - VOL_SLIDER_TOP, TH_CORNER_R, TH_CARD);
     }
 
-    // Filled part (cyan)
+    // Filled part (accent cyan)
     if (fill_h > 0) {
-        gfx->fillRect(VOL_SLIDER_X, fill_y, VOL_SLIDER_W, fill_h, CYAN);
+        gfx->fillRoundRect(VOL_SLIDER_X, fill_y, VOL_SLIDER_W, fill_h,
+                           TH_CORNER_R, TH_ACCENT);
     }
 
-    // Update percentage text (clear area first)
-    gfx->fillRect(40, 38, 100, 24, BLACK);
-    gfx->setTextSize(3);
-    gfx->setTextColor(WHITE);
+    // Update percentage text (FreeSansBold)
+    gfx->fillRect(30, 38, 120, 26, TH_BG);
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_TEXT);
     // Center the text roughly
     if (vol < 10) {
-        gfx->setCursor(68, 38);
+        gfx->setCursor(68, 56);
     } else if (vol < 100) {
-        gfx->setCursor(50, 38);
+        gfx->setCursor(56, 56);
     } else {
-        gfx->setCursor(32, 38);
+        gfx->setCursor(44, 56);
     }
     gfx->printf("%d%%", vol);
-
-    // Update status bar volume text
-    gfx->fillRect(0, 580, 180, 15, BLACK);
-    gfx->setTextSize(1);
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(5, 585);
-    gfx->printf("Vol: %d%%", vol);
+    gfx->setFont(NULL);
 }
 
 // ------------------------------------------------------------------
@@ -518,15 +528,15 @@ void display_show_favorites_view(UIState* state) {
 
     // Status bar: BACK + ADD
     const int STATUS_Y = 580;
-    gfx->fillRect(0, STATUS_Y, 180, 60, BLACK);
+    gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
     gfx->setTextSize(1);
 
     // Line 1: Context
-    gfx->setTextColor(CYAN);
+    gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(5, STATUS_Y + 5);
     gfx->print("Favorites");
 
-    // Line 2: Status text or playing info
+    // Line 2: Status text or station name
     const char* status_text = state->get_status_text();
     if (status_text[0] != '\0') {
         gfx->setTextColor(MAGENTA);
@@ -536,25 +546,63 @@ void display_show_favorites_view(UIState* state) {
         char info[29];
         strncpy(info, state->get_station_name(), 28);
         info[28] = '\0';
-        gfx->setTextColor(GREEN);
+        gfx->setTextColor(TH_PLAYING);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print(info);
     } else {
-        gfx->setTextColor(WHITE);
+        gfx->setTextColor(TH_TEXT_SEC);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print("Not playing");
     }
 
     // Line 3: BACK (left) + ADD (right)
-    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(YELLOW);
-    gfx->setCursor(25, STATUS_Y + 43);
-    gfx->print("BACK");
+    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_PLAYING, "ADD");
+}
 
-    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(GREEN);
-    gfx->setCursor(120, STATUS_Y + 43);
-    gfx->print("ADD");
+// ------------------------------------------------------------------
+// History view
+// ------------------------------------------------------------------
+
+void display_show_history_view(UIState* state) {
+    if (!gfx) return;
+
+    Serial.println("[Display] Showing history view...");
+
+    history_render(gfx, history_get_page());
+
+    // Status bar: BACK + CLEAR
+    const int STATUS_Y = 580;
+    gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
+    gfx->setTextSize(1);
+
+    // Line 1: Context
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->print("History");
+
+    // Line 2: Status text or station name
+    const char* status_text = state->get_status_text();
+    if (status_text[0] != '\0') {
+        gfx->setTextColor(MAGENTA);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(status_text);
+    } else if (state->get_is_playing()) {
+        char info[29];
+        strncpy(info, state->get_station_name(), 28);
+        info[28] = '\0';
+        gfx->setTextColor(TH_PLAYING);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(info);
+    } else {
+        gfx->setTextColor(TH_TEXT_SEC);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print("Not playing");
+    }
+
+    // Line 3: BACK (left) + CLEAR (right)
+    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_DANGER, "CLEAR");
 }
 
 // ------------------------------------------------------------------
@@ -576,15 +624,15 @@ void display_update_status_bar_settings(UIState* state) {
     if (!gfx) return;
 
     const int STATUS_Y = 580;
-    gfx->fillRect(0, STATUS_Y, 180, 60, BLACK);
+    gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
     gfx->setTextSize(1);
 
     // Line 1: Context
-    gfx->setTextColor(CYAN);
+    gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(5, STATUS_Y + 5);
     gfx->print("Settings");
 
-    // Line 2: Status text or playing info
+    // Line 2: Status text or station name
     const char* status_text = state->get_status_text();
     if (status_text[0] != '\0') {
         gfx->setTextColor(MAGENTA);
@@ -594,25 +642,18 @@ void display_update_status_bar_settings(UIState* state) {
         char info[29];
         strncpy(info, state->get_station_name(), 28);
         info[28] = '\0';
-        gfx->setTextColor(GREEN);
+        gfx->setTextColor(TH_PLAYING);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print(info);
     } else {
-        gfx->setTextColor(WHITE);
+        gfx->setTextColor(TH_TEXT_SEC);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print("Not playing");
     }
 
     // Line 3: BACK (left) + STOP (right)
-    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(YELLOW);
-    gfx->setCursor(25, STATUS_Y + 43);
-    gfx->print("BACK");
-
-    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(115, STATUS_Y + 43);
-    gfx->print("STOP");
+    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "STOP");
 }
 
 // ------------------------------------------------------------------
@@ -622,15 +663,22 @@ void display_update_status_bar_settings(UIState* state) {
 void display_draw_marker_at_latlon(float lat, float lon, UIState* state) {
     if (!gfx || !state) return;
 
-    MapSlice& slice = state->get_current_slice();
+    // Use zoom-aware geographic bounds
+    float lon_min = state->get_view_lon_min();
+    float lon_max = state->get_view_lon_max();
+    float lat_max = state->get_view_lat_max();
+    float lat_min = state->get_view_lat_min();
 
-    float lon_range = slice.lon_max - slice.lon_min;
+    float lon_range = lon_max - lon_min;
     if (lon_range < 0) lon_range += 360.0f;
 
-    float norm_lon = lon - slice.lon_min;
+    float norm_lon = lon - lon_min;
     if (norm_lon < 0) norm_lon += 360.0f;
     float norm_x = norm_lon / lon_range;
-    float norm_y = (90.0f - lat) / 180.0f;
+    float norm_y = (lat_max - lat) / (lat_max - lat_min);
+
+    // Only draw if marker is within current view
+    if (norm_x < 0.0f || norm_x > 1.0f || norm_y < 0.0f || norm_y > 1.0f) return;
 
     int portrait_x = constrain((int)(norm_x * 179), 0, 179);
     int portrait_y = constrain((int)(norm_y * 579), 0, 579);

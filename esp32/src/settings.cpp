@@ -7,6 +7,7 @@
 
 #include "settings.h"
 #include "config.h"
+#include "theme.h"
 #include "Arduino_GFX_Library.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -19,17 +20,10 @@ static const int TITLE_HEIGHT          = 40;
 static const int CURRENT_SECTION_HEIGHT = 50;
 static const int DEVICE_ROW_HEIGHT     = 60;
 static const int RESCAN_ROW_HEIGHT     = 60;
-static const int DISPLAY_WIDTH         = 180;
 static const int SETTINGS_AREA_BOTTOM  = 580;
 
-// Colors (matching favorites.cpp)
-static const uint16_t COLOR_BG        = 0x0000;  // BLACK
-static const uint16_t COLOR_TITLE     = 0x07FF;  // CYAN
-static const uint16_t COLOR_ITEM_TEXT = 0xFFFF;  // WHITE
-static const uint16_t COLOR_PLACE     = 0x8410;  // Mid gray
-static const uint16_t COLOR_DIVIDER   = 0x4208;  // Dark gray
-static const uint16_t COLOR_HIGHLIGHT = 0x0228;  // Dark teal
-static const uint16_t COLOR_SELECTED  = 0x07E0;  // GREEN
+// Zoom row
+static const int ZOOM_ROW_HEIGHT = 40;
 
 // State
 static DiscoveredDevice _devices[MAX_DISCOVERED_DEVICES];
@@ -37,6 +31,7 @@ static int _device_count = 0;
 static char _saved_ip[16] = "";
 static char _saved_name[48] = "";
 static bool _scanning = false;
+static int _saved_zoom = 1;  // 1, 2, or 3
 
 // Callbacks
 static DeviceSelectedCallback _device_cb = nullptr;
@@ -63,6 +58,7 @@ static bool save_to_file() {
     DynamicJsonDocument doc(512);
     doc["ip"] = _saved_ip;
     doc["n"] = _saved_name;
+    doc["zoom"] = _saved_zoom;
 
     if (_group_count > 0) {
         JsonArray grp = doc.createNestedArray("grp");
@@ -73,8 +69,8 @@ static bool save_to_file() {
 
     serializeJson(doc, f);
     f.close();
-    Serial.printf("[Settings] Saved: %s (%s) + %d grouped\n",
-                  _saved_name, _saved_ip, _group_count);
+    Serial.printf("[Settings] Saved: %s (%s) + %d grouped, zoom=%dx\n",
+                  _saved_name, _saved_ip, _group_count, _saved_zoom);
     return true;
 }
 
@@ -103,6 +99,8 @@ static bool load_from_file() {
     _saved_ip[sizeof(_saved_ip) - 1] = '\0';
     strncpy(_saved_name, doc["n"] | "", sizeof(_saved_name) - 1);
     _saved_name[sizeof(_saved_name) - 1] = '\0';
+    _saved_zoom = doc["zoom"] | 1;
+    if (_saved_zoom < 1 || _saved_zoom > 3) _saved_zoom = 1;
 
     // Load group IPs
     _group_count = 0;
@@ -259,32 +257,38 @@ static void draw_device_row(Arduino_GFX* gfx, int index, int y_top) {
                       (strcmp(_devices[index].ip, _saved_ip) == 0);
     bool is_grouped = _devices[index].grouped;
 
-    // --- Left zone: device name + primary indicator ---
-    gfx->setTextSize(2);
-    if (!_devices[index].valid) {
-        gfx->setTextColor(COLOR_DIVIDER);
-    } else if (is_primary) {
-        gfx->setTextColor(COLOR_SELECTED);  // GREEN
-    } else {
-        gfx->setTextColor(COLOR_ITEM_TEXT);
-    }
-    gfx->setCursor(8, y_top + 10);
+    int card_y = y_top + 2;
+    int card_h = DEVICE_ROW_HEIGHT - 4;
 
-    char trunc_name[11];
+    // Card background
+    gfx->fillRoundRect(TH_CARD_MARGIN, card_y, TH_CARD_W, card_h,
+                        TH_CORNER_R, TH_CARD);
+
+    // --- Left zone: device name + primary indicator ---
+    gfx->setTextSize(1);
+    if (!_devices[index].valid) {
+        gfx->setTextColor(TH_DIVIDER);
+    } else if (is_primary) {
+        gfx->setTextColor(TH_PLAYING);  // GREEN
+    } else {
+        gfx->setTextColor(TH_TEXT);
+    }
+    gfx->setCursor(10, card_y + 10);
+
+    char trunc_name[19];
     if (is_primary) {
         trunc_name[0] = '*';
-        strncpy(trunc_name + 1, _devices[index].name, 9);
-        trunc_name[10] = '\0';
+        strncpy(trunc_name + 1, _devices[index].name, 17);
+        trunc_name[18] = '\0';
     } else {
-        strncpy(trunc_name, _devices[index].name, 10);
-        trunc_name[10] = '\0';
+        strncpy(trunc_name, _devices[index].name, 18);
+        trunc_name[18] = '\0';
     }
     gfx->print(trunc_name);
 
     // IP address below name
-    gfx->setTextSize(1);
-    gfx->setTextColor(_devices[index].valid ? COLOR_PLACE : COLOR_DIVIDER);
-    gfx->setCursor(8, y_top + 38);
+    gfx->setTextColor(_devices[index].valid ? TH_TEXT_SEC : TH_DIVIDER);
+    gfx->setCursor(10, card_y + 38);
     if (_devices[index].valid) {
         gfx->print(_devices[index].ip);
     } else {
@@ -293,48 +297,58 @@ static void draw_device_row(Arduino_GFX* gfx, int index, int y_top) {
 
     // --- Right zone: group toggle indicator ---
     if (_devices[index].valid && !is_primary) {
-        gfx->setTextSize(2);
-        gfx->setTextColor(is_grouped ? COLOR_TITLE : COLOR_DIVIDER);
-        gfx->setCursor(140, y_top + 18);
+        gfx->setFont(&FreeSansBold10pt7b);
+        gfx->setTextSize(1);
+        gfx->setTextColor(is_grouped ? TH_ACCENT : TH_DIVIDER);
+        gfx->setCursor(146, card_y + card_h / 2 + 5);
         gfx->print("G");
+        gfx->setFont(NULL);
 
         // Vertical divider between zones
-        gfx->drawFastVLine(SELECT_ZONE_W, y_top, DEVICE_ROW_HEIGHT, COLOR_DIVIDER);
+        gfx->drawFastVLine(SELECT_ZONE_W, card_y + 6, card_h - 12, TH_DIVIDER);
     }
-
-    // Horizontal divider at bottom
-    gfx->drawFastHLine(5, y_top + DEVICE_ROW_HEIGHT - 1,
-                        DISPLAY_WIDTH - 10, COLOR_DIVIDER);
 }
 
 void settings_render(Arduino_GFX* gfx) {
     if (!gfx) return;
 
     // Clear main area
-    gfx->fillRect(0, 0, DISPLAY_WIDTH, SETTINGS_AREA_BOTTOM, COLOR_BG);
+    gfx->fillRect(0, 0, TH_DISPLAY_W, SETTINGS_AREA_BOTTOM, TH_BG);
 
-    // Title
-    gfx->setTextSize(2);
-    gfx->setTextColor(COLOR_TITLE);
-    gfx->setCursor(15, 12);
+    // Title (FreeSansBold)
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(36, FONT_SANS_ASCENT + 8);
     gfx->print("SETTINGS");
+    gfx->setFont(NULL);
 
     // Divider under title
-    gfx->drawFastHLine(5, TITLE_HEIGHT - 1, DISPLAY_WIDTH - 10, COLOR_DIVIDER);
+    gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
 
-    // Current device section
+    // Zoom row card
+    int zoom_card_y = TITLE_HEIGHT + 2;
+    int zoom_card_h = ZOOM_ROW_HEIGHT - 4;
+    gfx->fillRoundRect(TH_CARD_MARGIN, zoom_card_y, TH_CARD_W, zoom_card_h,
+                        TH_CORNER_R, TH_CARD);
     gfx->setTextSize(1);
-    gfx->setTextColor(COLOR_PLACE);
-    gfx->setCursor(5, TITLE_HEIGHT + 5);
+    gfx->setTextColor(TH_TEXT);
+    gfx->setCursor(10, zoom_card_y + 16);
+    gfx->printf("Zoom: %dx", _saved_zoom);
+
+    // Current device section (shifted down by zoom row)
+    int dev_section_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT;
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_TEXT_SEC);
+    gfx->setCursor(5, dev_section_y + 5);
     gfx->print("Current device:");
 
-    gfx->setTextSize(2);
-    gfx->setTextColor(COLOR_SELECTED);
-    gfx->setCursor(5, TITLE_HEIGHT + 18);
+    gfx->setTextColor(TH_PLAYING);
+    gfx->setCursor(5, dev_section_y + 18);
     if (_saved_name[0] != '\0') {
-        char trunc[12];
-        strncpy(trunc, _saved_name, 11);
-        trunc[11] = '\0';
+        char trunc[28];
+        strncpy(trunc, _saved_name, 27);
+        trunc[27] = '\0';
         gfx->print(trunc);
     } else {
         const char* ip = settings_get_wiim_ip();
@@ -347,21 +361,20 @@ void settings_render(Arduino_GFX* gfx) {
 
     // Group member count
     if (_group_count > 0) {
-        gfx->setTextSize(1);
-        gfx->setTextColor(COLOR_TITLE);
-        gfx->setCursor(5, TITLE_HEIGHT + 38);
+        gfx->setTextColor(TH_ACCENT);
+        gfx->setCursor(5, dev_section_y + 38);
         gfx->printf("+ %d grouped", _group_count);
     }
 
     // Divider under current device
-    int devices_start_y = TITLE_HEIGHT + CURRENT_SECTION_HEIGHT;
-    gfx->drawFastHLine(5, devices_start_y - 1, DISPLAY_WIDTH - 10, COLOR_DIVIDER);
+    int devices_start_y = dev_section_y + CURRENT_SECTION_HEIGHT;
+    gfx->drawFastHLine(5, devices_start_y - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
 
     // Scanning state
     if (_scanning) {
-        gfx->setTextSize(2);
-        gfx->setTextColor(0xFFE0);  // YELLOW
-        gfx->setCursor(10, 250);
+        gfx->setTextSize(1);
+        gfx->setTextColor(TH_WARNING);
+        gfx->setCursor(50, 250);
         gfx->print("Scanning...");
         return;
     }
@@ -375,7 +388,7 @@ void settings_render(Arduino_GFX* gfx) {
     if (_device_count == 0) {
         // No devices found
         gfx->setTextSize(1);
-        gfx->setTextColor(COLOR_PLACE);
+        gfx->setTextColor(TH_TEXT_DIM);
         gfx->setCursor(15, devices_start_y + 40);
         gfx->print("No devices found");
         gfx->setCursor(15, devices_start_y + 65);
@@ -388,12 +401,17 @@ void settings_render(Arduino_GFX* gfx) {
         }
     }
 
-    // Rescan button
-    gfx->drawFastHLine(5, rescan_y, DISPLAY_WIDTH - 10, COLOR_DIVIDER);
-    gfx->setTextSize(2);
-    gfx->setTextColor(COLOR_TITLE);
-    gfx->setCursor(40, rescan_y + 22);
-    gfx->print("Rescan");
+    // Rescan button (card style)
+    gfx->fillRoundRect(TH_CARD_MARGIN, rescan_y + 4, TH_CARD_W,
+                        RESCAN_ROW_HEIGHT - 8, TH_CORNER_R, TH_CARD);
+    gfx->drawRoundRect(TH_CARD_MARGIN, rescan_y + 4, TH_CARD_W,
+                        RESCAN_ROW_HEIGHT - 8, TH_CORNER_R, TH_ACCENT);
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(48, rescan_y + RESCAN_ROW_HEIGHT / 2 + 3);
+    gfx->print("RESCAN");
+    gfx->setFont(NULL);
 }
 
 // ------------------------------------------------------------------
@@ -403,18 +421,21 @@ void settings_render(Arduino_GFX* gfx) {
 bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
     if (_scanning) return false;
 
-    int devices_start_y = TITLE_HEIGHT + CURRENT_SECTION_HEIGHT;
+    int devices_start_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + CURRENT_SECTION_HEIGHT;
     int rescan_y = SETTINGS_AREA_BOTTOM - RESCAN_ROW_HEIGHT;
 
     // Rescan button
     if (y >= rescan_y && y < SETTINGS_AREA_BOTTOM) {
         Serial.println("[Settings] Rescan tapped");
         if (gfx) {
-            gfx->fillRect(0, rescan_y, DISPLAY_WIDTH, RESCAN_ROW_HEIGHT, COLOR_HIGHLIGHT);
-            gfx->setTextSize(2);
-            gfx->setTextColor(COLOR_ITEM_TEXT);
-            gfx->setCursor(40, rescan_y + 22);
-            gfx->print("Rescan");
+            gfx->fillRoundRect(TH_CARD_MARGIN, rescan_y + 4, TH_CARD_W,
+                                RESCAN_ROW_HEIGHT - 8, TH_CORNER_R, TH_CARD_HI);
+            gfx->setFont(&FreeSansBold10pt7b);
+            gfx->setTextSize(1);
+            gfx->setTextColor(TH_TEXT);
+            gfx->setCursor(48, rescan_y + RESCAN_ROW_HEIGHT / 2 + 3);
+            gfx->print("RESCAN");
+            gfx->setFont(NULL);
             delay(80);
         }
         // Show scanning state, scan, then show results
@@ -439,6 +460,8 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
             bool is_primary = (strcmp(_devices[idx].ip, _saved_ip) == 0);
             bool is_group_zone = (x >= SELECT_ZONE_W);
             int y_top = devices_start_y + idx * DEVICE_ROW_HEIGHT;
+            int card_y = y_top + 2;
+            int card_h = DEVICE_ROW_HEIGHT - 4;
 
             if (is_group_zone && !is_primary) {
                 // === GROUP TOGGLE ZONE ===
@@ -448,12 +471,12 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
                     Serial.printf("[Settings] Ungrouping: %s (%s)\n",
                                  _devices[idx].name, _devices[idx].ip);
                     if (gfx) {
-                        gfx->fillRect(SELECT_ZONE_W, y_top,
-                                      DISPLAY_WIDTH - SELECT_ZONE_W, DEVICE_ROW_HEIGHT,
-                                      COLOR_HIGHLIGHT);
+                        gfx->fillRoundRect(SELECT_ZONE_W + 1, card_y,
+                                           TH_CARD_W - SELECT_ZONE_W + TH_CARD_MARGIN,
+                                           card_h, TH_CORNER_R, TH_CARD_HI);
                         gfx->setTextSize(1);
-                        gfx->setTextColor(COLOR_ITEM_TEXT);
-                        gfx->setCursor(SELECT_ZONE_W + 8, y_top + 25);
+                        gfx->setTextColor(TH_TEXT);
+                        gfx->setCursor(SELECT_ZONE_W + 8, card_y + 25);
                         gfx->print("Leave");
                         delay(80);
                     }
@@ -463,12 +486,12 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
                     Serial.printf("[Settings] Grouping: %s (%s)\n",
                                  _devices[idx].name, _devices[idx].ip);
                     if (gfx) {
-                        gfx->fillRect(SELECT_ZONE_W, y_top,
-                                      DISPLAY_WIDTH - SELECT_ZONE_W, DEVICE_ROW_HEIGHT,
-                                      COLOR_HIGHLIGHT);
+                        gfx->fillRoundRect(SELECT_ZONE_W + 1, card_y,
+                                           TH_CARD_W - SELECT_ZONE_W + TH_CARD_MARGIN,
+                                           card_h, TH_CORNER_R, TH_CARD_HI);
                         gfx->setTextSize(1);
-                        gfx->setTextColor(COLOR_ITEM_TEXT);
-                        gfx->setCursor(SELECT_ZONE_W + 10, y_top + 25);
+                        gfx->setTextColor(TH_TEXT);
+                        gfx->setCursor(SELECT_ZONE_W + 10, card_y + 25);
                         gfx->print("Join");
                         delay(80);
                     }
@@ -489,13 +512,15 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
                              _devices[idx].name, _devices[idx].ip);
 
                 if (gfx) {
-                    gfx->fillRect(0, y_top, SELECT_ZONE_W, DEVICE_ROW_HEIGHT, COLOR_HIGHLIGHT);
-                    gfx->setTextSize(2);
-                    gfx->setTextColor(COLOR_ITEM_TEXT);
-                    gfx->setCursor(8, y_top + 10);
-                    char trunc[11];
-                    strncpy(trunc, _devices[idx].name, 10);
-                    trunc[10] = '\0';
+                    gfx->fillRoundRect(TH_CARD_MARGIN, card_y,
+                                       SELECT_ZONE_W - TH_CARD_MARGIN,
+                                       card_h, TH_CORNER_R, TH_CARD_HI);
+                    gfx->setTextSize(1);
+                    gfx->setTextColor(TH_TEXT);
+                    gfx->setCursor(10, card_y + 10);
+                    char trunc[19];
+                    strncpy(trunc, _devices[idx].name, 18);
+                    trunc[18] = '\0';
                     gfx->print(trunc);
                     delay(80);
                 }
@@ -522,5 +547,61 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
         }
     }
 
+    // Zoom row (between title and current device section)
+    int zoom_y = TITLE_HEIGHT;
+    if (y >= zoom_y && y < zoom_y + ZOOM_ROW_HEIGHT) {
+        // Cycle zoom: 1 -> 2 -> 3 -> 1
+        int new_zoom = (_saved_zoom % 3) + 1;
+
+        // Validate zoom files exist before allowing 2x/3x
+        if (new_zoom > 1) {
+            char path[24];
+            snprintf(path, sizeof(path), "/maps/zoom%d.bin", new_zoom);
+            if (!LittleFS.exists(path)) {
+                Serial.printf("[Settings] Zoom %dx file missing: %s\n", new_zoom, path);
+                new_zoom = (new_zoom % 3) + 1;
+                if (new_zoom > 1) {
+                    snprintf(path, sizeof(path), "/maps/zoom%d.bin", new_zoom);
+                    if (!LittleFS.exists(path)) new_zoom = 1;
+                }
+            }
+        }
+
+        _saved_zoom = new_zoom;
+        save_to_file();
+        Serial.printf("[Settings] Zoom set to %dx\n", _saved_zoom);
+
+        if (gfx) {
+            int zoom_card_y = TITLE_HEIGHT + 2;
+            int zoom_card_h = ZOOM_ROW_HEIGHT - 4;
+            gfx->fillRoundRect(TH_CARD_MARGIN, zoom_card_y, TH_CARD_W, zoom_card_h,
+                                TH_CORNER_R, TH_CARD_HI);
+            gfx->setTextSize(1);
+            gfx->setTextColor(TH_TEXT);
+            gfx->setCursor(10, zoom_card_y + 16);
+            gfx->printf("Zoom: %dx", _saved_zoom);
+            delay(80);
+        }
+
+        settings_render(gfx);
+        return true;
+    }
+
     return false;
+}
+
+// ------------------------------------------------------------------
+// Zoom API
+// ------------------------------------------------------------------
+
+int settings_get_zoom() {
+    return _saved_zoom;
+}
+
+void settings_set_zoom(int level, Arduino_GFX* gfx) {
+    if (level < 1) level = 1;
+    if (level > 3) level = 3;
+    _saved_zoom = level;
+    save_to_file();
+    if (gfx) settings_render(gfx);
 }

@@ -27,14 +27,87 @@
 #include "linkplay_client.h"
 #include "radio_client.h"
 #include "favorites.h"
+#include "history.h"
 #include "settings.h"
 #include <ESPmDNS.h>
+#include <ArduinoJson.h>
+#include <LittleFS.h>
 
 // ------------------------------------------------------------------
 // Global State
 // ------------------------------------------------------------------
 
 static UIState ui_state;
+
+// Forward declarations
+static void record_to_history(const StationInfo* station);
+
+// ------------------------------------------------------------------
+// Playback persistence (resume after reboot)
+// ------------------------------------------------------------------
+
+static const char* PLAYBACK_FILE = "/playback.json";
+
+static void save_playback_state() {
+    const StationInfo* station = radio_get_current();
+    if (!station || !station->valid) return;
+
+    File f = LittleFS.open(PLAYBACK_FILE, "w");
+    if (!f) return;
+
+    DynamicJsonDocument doc(256);
+    doc["id"] = station->id;
+    doc["t"] = station->title;
+    doc["p"] = station->place;
+    doc["c"] = station->country;
+    doc["lat"] = station->lat;
+    doc["lon"] = station->lon;
+    serializeJson(doc, f);
+    f.close();
+    Serial.printf("[Main] Saved playback: %s\n", station->title);
+}
+
+static void clear_playback_state() {
+    if (LittleFS.exists(PLAYBACK_FILE)) {
+        LittleFS.remove(PLAYBACK_FILE);
+        Serial.println("[Main] Cleared saved playback");
+    }
+}
+
+static bool resume_playback() {
+    if (!LittleFS.exists(PLAYBACK_FILE)) return false;
+
+    File f = LittleFS.open(PLAYBACK_FILE, "r");
+    if (!f) return false;
+
+    DynamicJsonDocument doc(256);
+    if (deserializeJson(doc, f)) { f.close(); return false; }
+    f.close();
+
+    const char* id = doc["id"] | "";
+    const char* title = doc["t"] | "";
+    const char* place = doc["p"] | "";
+    const char* country = doc["c"] | "";
+    float lat = doc["lat"] | 0.0f;
+    float lon = doc["lon"] | 0.0f;
+
+    if (strlen(id) == 0) return false;
+
+    Serial.printf("[Main] Resuming: %s (%s, %s)\n", title, place, country);
+
+    if (radio_play_by_id(id, title, place, country, lat, lon)) {
+        ui_state.set_playing(title, place);
+        ui_state.set_marker(lat, lon);
+
+        int slice_idx = ui_state.slice_index_for_lon(lon);
+        ui_state.set_slice_index(slice_idx);
+        return true;
+    }
+
+    Serial.println("[Main] Resume failed - clearing saved state");
+    clear_playback_state();
+    return false;
+}
 
 // ------------------------------------------------------------------
 // Callbacks
@@ -58,6 +131,8 @@ static void on_map_touch(int server_x, int server_y) {
         if (station) {
             ui_state.set_playing(station->title, station->place);
             ui_state.set_marker(station->lat, station->lon);
+            save_playback_state();
+            record_to_history(station);
             display_draw_marker_at_latlon(station->lat, station->lon, &ui_state);
             display_update_status_bar(&ui_state);
         }
@@ -82,6 +157,8 @@ static void on_favorite_play(int index) {
                          fav->lat, fav->lon)) {
         ui_state.set_playing(fav->title, fav->place);
         ui_state.set_marker(fav->lat, fav->lon);
+        save_playback_state();
+        record_to_history(radio_get_current());
 
         // Auto-switch to correct map slice
         int slice_idx = ui_state.slice_index_for_lon(fav->lon);
@@ -102,6 +179,50 @@ static void on_favorite_delete(int index) {
 }
 
 // ------------------------------------------------------------------
+// History helpers
+// ------------------------------------------------------------------
+
+static void record_to_history(const StationInfo* station) {
+    if (!station || !station->valid) return;
+    HistoryEntry entry;
+    strncpy(entry.station_id, station->id, 15);
+    entry.station_id[15] = '\0';
+    strncpy(entry.title, station->title, 63);
+    entry.title[63] = '\0';
+    strncpy(entry.place, station->place, 31);
+    entry.place[31] = '\0';
+    strncpy(entry.country, station->country, 3);
+    entry.country[3] = '\0';
+    entry.lat = station->lat;
+    entry.lon = station->lon;
+    history_record(entry);
+}
+
+static void on_history_play(int index) {
+    const HistoryEntry* entry = history_get(index);
+    if (!entry) return;
+
+    ui_state.set_status_text("Loading...");
+    display_show_history_view(&ui_state);
+
+    if (radio_play_by_id(entry->station_id, entry->title, entry->place, entry->country,
+                         entry->lat, entry->lon)) {
+        ui_state.set_playing(entry->title, entry->place);
+        ui_state.set_marker(entry->lat, entry->lon);
+        save_playback_state();
+
+        int slice_idx = ui_state.slice_index_for_lon(entry->lon);
+        ui_state.set_slice_index(slice_idx);
+
+        ui_state.set_view_mode(VIEW_MAP);
+        display_show_map_view(&ui_state);
+    } else {
+        ui_state.set_status_text("Failed to play");
+        display_show_history_view(&ui_state);
+    }
+}
+
+// ------------------------------------------------------------------
 // Settings callback
 // ------------------------------------------------------------------
 
@@ -113,6 +234,7 @@ static void on_device_selected(const char* ip, const char* name) {
         linkplay_stop();
         radio_stop();
         ui_state.set_stopped();
+        clear_playback_state();
     }
 
     // Ungroup all slaves from the OLD master before switching
@@ -187,6 +309,17 @@ static void on_ui_button(int button_id) {
             }
             display_show_favorites_view(&ui_state);
         }
+    } else if (mode == VIEW_HISTORY) {
+        // History mode: left = BACK (to menu), right = CLEAR
+        if (button_id == 0) {
+            Serial.println("[Main] BACK (to menu)");
+            ui_state.set_view_mode(VIEW_MENU);
+            display_show_menu_view(&ui_state);
+        } else if (button_id == 1) {
+            Serial.println("[Main] CLEAR history");
+            history_clear();
+            display_show_history_view(&ui_state);
+        }
     } else if (mode == VIEW_SETTINGS) {
         // Settings mode: left = BACK (to menu), right = STOP
         if (button_id == 0) {
@@ -197,6 +330,7 @@ static void on_ui_button(int button_id) {
             Serial.println("[Main] STOP (from settings)");
             radio_stop();
             ui_state.set_stopped();
+            clear_playback_state();
             display_update_status_bar_settings(&ui_state);
         }
     } else if (mode == VIEW_VOLUME) {
@@ -217,6 +351,7 @@ static void on_ui_button(int button_id) {
             Serial.println("[Main] STOP (from menu)");
             radio_stop();
             ui_state.set_stopped();
+            clear_playback_state();
             display_update_status_bar_menu(&ui_state);
         }
     } else {
@@ -225,6 +360,7 @@ static void on_ui_button(int button_id) {
             Serial.println("[Main] STOP");
             radio_stop();
             ui_state.set_stopped();
+            clear_playback_state();
             display_update_status_bar(&ui_state);
         } else if (button_id == 1) {
             Serial.println("[Main] NEXT");
@@ -235,6 +371,8 @@ static void on_ui_button(int button_id) {
                 if (station) {
                     ui_state.set_playing(station->title, station->place);
                     ui_state.set_marker(station->lat, station->lon);
+                    save_playback_state();
+                    record_to_history(station);
                     display_draw_marker_at_latlon(station->lat, station->lon, &ui_state);
                     display_update_status_bar(&ui_state);
                 }
@@ -250,6 +388,12 @@ static void on_slice_cycle() {
     if (ui_state.get_view_mode() == VIEW_FAVORITES) {
         favorites_next_page();
         display_show_favorites_view(&ui_state);
+        display_wake();
+        return;
+    }
+    if (ui_state.get_view_mode() == VIEW_HISTORY) {
+        history_next_page();
+        display_show_history_view(&ui_state);
         display_wake();
         return;
     }
@@ -281,6 +425,8 @@ static void on_next_button() {
         if (station) {
             ui_state.set_playing(station->title, station->place);
             ui_state.set_marker(station->lat, station->lon);
+            save_playback_state();
+            record_to_history(station);
             display_draw_marker_at_latlon(station->lat, station->lon, &ui_state);
             display_update_status_bar(&ui_state);
         }
@@ -296,15 +442,37 @@ static void on_next_button() {
 
 static void on_swipe(int direction) {
     display_wake();
-    if (direction > 0) {
-        ui_state.cycle_slice();
-    } else {
-        ui_state.cycle_slice_reverse();
+    if (ui_state.get_view_mode() != VIEW_MAP) return;
+
+    bool changed = false;
+    int zoom = ui_state.get_zoom_level();
+
+    if (direction == 1 || direction == -1) {
+        // Horizontal swipe
+        if (zoom > 1) {
+            changed = (direction == 1) ? ui_state.zoom_move_right()
+                                       : ui_state.zoom_move_left();
+        } else {
+            if (direction > 0) ui_state.cycle_slice();
+            else ui_state.cycle_slice_reverse();
+            changed = true;
+        }
+    } else if (direction == 2 || direction == -2) {
+        // Vertical swipe (only meaningful at zoom > 1)
+        if (zoom > 1) {
+            changed = (direction == 2) ? ui_state.zoom_move_down()
+                                       : ui_state.zoom_move_up();
+        }
     }
-    MapSlice& slice = ui_state.get_current_slice();
-    Serial.printf("[Main] Swipe %s -> %s\n", direction > 0 ? "right" : "left", slice.name);
-    display_refresh_map_only(&ui_state);
-    display_update_status_bar(&ui_state);
+
+    if (changed) {
+        MapSlice& slice = ui_state.get_current_slice();
+        Serial.printf("[Main] Swipe dir=%d -> %s (zoom=%d col=%d row=%d)\n",
+                      direction, slice.name, zoom,
+                      ui_state.get_zoom_col(), ui_state.get_zoom_row());
+        display_refresh_map_only(&ui_state);
+        display_update_status_bar(&ui_state);
+    }
 }
 
 // ------------------------------------------------------------------
@@ -336,6 +504,7 @@ static void toggle_menu() {
         display_show_menu_view(&ui_state);
     } else {
         // From menu or volume -> back to map
+        ui_state.set_zoom_level(settings_get_zoom());  // Sync zoom from settings
         ui_state.set_view_mode(VIEW_MAP);
         display_show_map_view(&ui_state);
     }
@@ -372,6 +541,11 @@ static void on_menu_item(MenuItemId item_id) {
             ui_state.set_view_mode(VIEW_FAVORITES);
             display_show_favorites_view(&ui_state);
             break;
+        case MENU_HISTORY:
+            history_set_page(0);
+            ui_state.set_view_mode(VIEW_HISTORY);
+            display_show_history_view(&ui_state);
+            break;
         case MENU_SLEEP_TIMER: {
             // Cycle through presets: Off -> 15 -> 30 -> 60 -> 90 -> Off
             static const int presets[] = {0, 15, 30, 60, 90};
@@ -397,7 +571,6 @@ static void on_menu_item(MenuItemId item_id) {
             display_update_status_bar_menu(&ui_state);
             break;
         }
-        case MENU_EQUALIZER:    Serial.println("[Main] TODO: Equalizer"); break;
         case MENU_SETTINGS:
             ui_state.set_view_mode(VIEW_SETTINGS);
             display_show_settings_view(&ui_state);  // Shows "Scanning..."
@@ -413,12 +586,15 @@ static void on_menu_touch(int portrait_x, int portrait_y) {
     ViewMode mode = ui_state.get_view_mode();
     if (mode == VIEW_FAVORITES) {
         favorites_handle_touch(portrait_x, portrait_y, display_get_gfx());
+    } else if (mode == VIEW_HISTORY) {
+        history_handle_touch(portrait_x, portrait_y, display_get_gfx());
     } else if (mode == VIEW_SETTINGS) {
         settings_handle_touch(portrait_x, portrait_y, display_get_gfx());
     } else {
         menu_handle_touch(portrait_x, portrait_y, display_get_gfx());
     }
 }
+
 
 // ------------------------------------------------------------------
 // Arduino setup & loop
@@ -460,10 +636,11 @@ void setup() {
         Serial.println("[mDNS] Started as radiowall.local");
     }
 
-    // Initialize settings (load saved WiiM IP from LittleFS)
+    // Initialize settings (load saved WiiM IP and zoom level from LittleFS)
     settings_init();
     settings_set_device_callback(on_device_selected);
     settings_set_group_callback(on_group_changed);
+    ui_state.set_zoom_level(settings_get_zoom());
 
     // Initialize LinkPlay client with saved IP (falls back to WIIM_IP from config.h)
     const char* wiim_ip = settings_get_wiim_ip();
@@ -498,6 +675,10 @@ void setup() {
     favorites_set_play_callback(on_favorite_play);
     favorites_set_delete_callback(on_favorite_delete);
 
+    // Initialize history
+    history_init();
+    history_set_play_callback(on_history_play);
+
     // Initialize buttons (GPIO 0 only - GPIO 21 conflicts with display)
     // Short press: cycle region, Long press: toggle menu, Double-tap: NEXT
     button_init();
@@ -516,7 +697,13 @@ void setup() {
         builtin_touch_set_ui_state(&ui_state);
     #endif
 
-    // Show map
+    // Resume previous playback or stop stale WiiM playback
+    if (!resume_playback()) {
+        // No saved state - stop WiiM in case it's still playing from last session
+        linkplay_stop();
+    }
+
+    // Show map (will show playing state if resumed)
     display_show_map_view(&ui_state);
 
     Serial.printf("[Main] Ready - Region: %s\n", ui_state.get_current_slice().name);

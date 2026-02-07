@@ -18,8 +18,8 @@ enum MenuItemId {
     MENU_VOLUME = 0,
     MENU_PAUSE_RESUME,
     MENU_FAVORITES,
+    MENU_HISTORY,
     MENU_SLEEP_TIMER,
-    MENU_EQUALIZER,
     MENU_SETTINGS,
     MENU_ITEM_COUNT  // sentinel = 6
 };

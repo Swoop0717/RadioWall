@@ -146,8 +146,8 @@ bool linkplay_set_volume(int volume) {
     return response == "OK";
 }
 
-String linkplay_get_status() {
-    return make_request("getPlayerStatus");
+String linkplay_get_status(int retries) {
+    return make_request("getPlayerStatus", retries);
 }
 
 // ------------------------------------------------------------------

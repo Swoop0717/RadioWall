@@ -22,7 +22,7 @@ typedef void (*TouchCallback)(int x, int y);
 typedef void (*MapTouchCallback)(int map_x, int map_y);          // Map coordinates (1024×600)
 typedef void (*UIButtonCallback)(int button_id);                  // 0=stop, 1=next
 typedef void (*MenuTouchCallback)(int portrait_x, int portrait_y); // Raw display coords
-typedef void (*SwipeCallback)(int direction);                      // -1=left, +1=right
+typedef void (*SwipeCallback)(int direction);                      // -1=left, +1=right, -2=up, +2=down
 typedef void (*VolumeChangeCallback)(int volume);                  // 0-100
 
 void builtin_touch_init();

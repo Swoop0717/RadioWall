@@ -55,6 +55,8 @@ UIState::UIState() {
     station_name[0] = '\0';
     location[0] = '\0';
     status_text[0] = '\0';
+    wiim_title[0] = '\0';
+    wiim_artist[0] = '\0';
     _view_mode = VIEW_MAP;
     _volume = 50;
     _paused = false;
@@ -62,10 +64,15 @@ UIState::UIState() {
     _marker_lat = 0;
     _marker_lon = 0;
     _has_marker = false;
+    _zoom_level = 1;
+    _zoom_col = 0;
+    _zoom_row = 0;
 }
 
 void UIState::cycle_slice() {
     current_slice_index = (current_slice_index + 1) % 4;
+    _zoom_col = 0;
+    _zoom_row = 0;
     Serial.printf("[UIState] Cycled to slice %d: %s\n",
                   current_slice_index,
                   slices[current_slice_index].name);
@@ -73,6 +80,8 @@ void UIState::cycle_slice() {
 
 void UIState::cycle_slice_reverse() {
     current_slice_index = (current_slice_index + 3) % 4;  // +3 mod 4 = -1
+    _zoom_col = 0;
+    _zoom_row = 0;
     Serial.printf("[UIState] Cycled to slice %d: %s\n",
                   current_slice_index,
                   slices[current_slice_index].name);
@@ -90,6 +99,8 @@ void UIState::set_playing(const char* station, const char* loc) {
     is_playing = true;
     _paused = false;
     status_text[0] = '\0';
+    wiim_title[0] = '\0';
+    wiim_artist[0] = '\0';
     strncpy(station_name, station, sizeof(station_name) - 1);
     station_name[sizeof(station_name) - 1] = '\0';
 
@@ -103,6 +114,8 @@ void UIState::set_stopped() {
     is_playing = false;
     _paused = false;
     status_text[0] = '\0';
+    wiim_title[0] = '\0';
+    wiim_artist[0] = '\0';
     Serial.println("[UIState] Playback stopped");
 }
 
@@ -142,7 +155,7 @@ void UIState::set_view_mode(ViewMode mode) {
 }
 
 bool UIState::is_menu_active() const {
-    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME || _view_mode == VIEW_FAVORITES || _view_mode == VIEW_SETTINGS;
+    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME || _view_mode == VIEW_FAVORITES || _view_mode == VIEW_HISTORY || _view_mode == VIEW_SETTINGS;
 }
 
 void UIState::set_volume(int vol) {
@@ -197,6 +210,21 @@ float UIState::get_marker_lon() const {
     return _marker_lon;
 }
 
+void UIState::set_wiim_metadata(const char* title, const char* artist) {
+    strncpy(wiim_title, title, sizeof(wiim_title) - 1);
+    wiim_title[sizeof(wiim_title) - 1] = '\0';
+    strncpy(wiim_artist, artist, sizeof(wiim_artist) - 1);
+    wiim_artist[sizeof(wiim_artist) - 1] = '\0';
+}
+
+const char* UIState::get_wiim_title() const {
+    return wiim_title;
+}
+
+const char* UIState::get_wiim_artist() const {
+    return wiim_artist;
+}
+
 int UIState::slice_index_for_lon(float lon) const {
     if (lon >= -150 && lon < -30) return 0;   // Americas
     if (lon >= -30 && lon < 60) return 1;     // Europe/Africa
@@ -207,7 +235,110 @@ int UIState::slice_index_for_lon(float lon) const {
 void UIState::set_slice_index(int idx) {
     if (idx >= 0 && idx < 4) {
         current_slice_index = idx;
+        _zoom_col = 0;
+        _zoom_row = 0;
         Serial.printf("[UIState] Slice set to %d: %s\n",
                       current_slice_index, slices[current_slice_index].name);
     }
+}
+
+// ------------------------------------------------------------------
+// Zoom
+// ------------------------------------------------------------------
+
+void UIState::set_zoom_level(int level) {
+    if (level < 1) level = 1;
+    if (level > 3) level = 3;
+    _zoom_level = level;
+    _zoom_col = 0;
+    _zoom_row = 0;
+    Serial.printf("[UIState] Zoom: %dx\n", _zoom_level);
+}
+
+int UIState::get_zoom_level() const { return _zoom_level; }
+int UIState::get_zoom_col() const { return _zoom_col; }
+int UIState::get_zoom_row() const { return _zoom_row; }
+
+bool UIState::zoom_move_left() {
+    if (_zoom_level <= 1) return false;
+    if (_zoom_col > 0) {
+        _zoom_col--;
+    } else {
+        // At left edge: move to previous slice, rightmost column
+        current_slice_index = (current_slice_index + 3) % 4;
+        _zoom_col = _zoom_level - 1;
+        _zoom_row = 0;
+    }
+    Serial.printf("[UIState] Zoom pos: slice=%d col=%d row=%d\n",
+                  current_slice_index, _zoom_col, _zoom_row);
+    return true;
+}
+
+bool UIState::zoom_move_right() {
+    if (_zoom_level <= 1) return false;
+    if (_zoom_col < _zoom_level - 1) {
+        _zoom_col++;
+    } else {
+        // At right edge: move to next slice, leftmost column
+        current_slice_index = (current_slice_index + 1) % 4;
+        _zoom_col = 0;
+        _zoom_row = 0;
+    }
+    Serial.printf("[UIState] Zoom pos: slice=%d col=%d row=%d\n",
+                  current_slice_index, _zoom_col, _zoom_row);
+    return true;
+}
+
+bool UIState::zoom_move_up() {
+    if (_zoom_level <= 1 || _zoom_row <= 0) return false;
+    _zoom_row--;
+    Serial.printf("[UIState] Zoom pos: slice=%d col=%d row=%d\n",
+                  current_slice_index, _zoom_col, _zoom_row);
+    return true;
+}
+
+bool UIState::zoom_move_down() {
+    if (_zoom_level <= 1 || _zoom_row >= _zoom_level - 1) return false;
+    _zoom_row++;
+    Serial.printf("[UIState] Zoom pos: slice=%d col=%d row=%d\n",
+                  current_slice_index, _zoom_col, _zoom_row);
+    return true;
+}
+
+float UIState::get_view_lon_min() const {
+    const MapSlice& s = slices[current_slice_index];
+    if (_zoom_level <= 1) return s.lon_min;
+
+    float range = s.lon_max - s.lon_min;
+    if (range < 0) range += 360.0f;
+
+    float sub_range = range / _zoom_level;
+    float result = s.lon_min + _zoom_col * sub_range;
+    if (result > 180.0f) result -= 360.0f;
+    return result;
+}
+
+float UIState::get_view_lon_max() const {
+    const MapSlice& s = slices[current_slice_index];
+    if (_zoom_level <= 1) return s.lon_max;
+
+    float range = s.lon_max - s.lon_min;
+    if (range < 0) range += 360.0f;
+
+    float sub_range = range / _zoom_level;
+    float result = s.lon_min + (_zoom_col + 1) * sub_range;
+    if (result > 180.0f) result -= 360.0f;
+    return result;
+}
+
+float UIState::get_view_lat_max() const {
+    if (_zoom_level <= 1) return 90.0f;
+    float lat_range = 180.0f / _zoom_level;
+    return 90.0f - _zoom_row * lat_range;
+}
+
+float UIState::get_view_lat_min() const {
+    if (_zoom_level <= 1) return -90.0f;
+    float lat_range = 180.0f / _zoom_level;
+    return 90.0f - (_zoom_row + 1) * lat_range;
 }
