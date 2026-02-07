@@ -31,6 +31,9 @@ bool linkplay_resume();
 // Set volume (0-100)
 bool linkplay_set_volume(int volume);
 
+// Get current volume (returns 0-100, or -1 on failure)
+int linkplay_get_volume();
+
 // Set sleep timer (0 = cancel, >0 = minutes)
 bool linkplay_set_sleep_timer(int minutes);
 

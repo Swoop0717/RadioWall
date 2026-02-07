@@ -156,6 +156,8 @@ bool radio_play_at_location(float lat, float lon) {
     _current_place_id = String(place->id);
     strncpy(_current_station.place, place->name, sizeof(_current_station.place) - 1);
     strncpy(_current_station.country, place->country, sizeof(_current_station.country) - 1);
+    _current_station.lat = place->lat_x100 / 100.0f;
+    _current_station.lon = place->lon_x100 / 100.0f;
 
     // Fetch stations for this place
     String path = "/api/ara/content/page/" + _current_place_id + "/channels";
@@ -260,6 +262,37 @@ void radio_stop() {
 
 const StationInfo* radio_get_current() {
     return _current_station.valid ? &_current_station : nullptr;
+}
+
+bool radio_play_by_id(const char* station_id, const char* title,
+                      const char* place, const char* country,
+                      float lat, float lon) {
+    Serial.printf("[Radio] Playing by ID: %s (%s)\n", title, place);
+
+    String stream_url = radio_get_stream_url(station_id);
+    if (stream_url.length() == 0) {
+        Serial.println("[Radio] Failed to get stream URL");
+        return false;
+    }
+
+    // Update current station info
+    strncpy(_current_station.id, station_id, sizeof(_current_station.id) - 1);
+    _current_station.id[sizeof(_current_station.id) - 1] = '\0';
+    strncpy(_current_station.title, title, sizeof(_current_station.title) - 1);
+    _current_station.title[sizeof(_current_station.title) - 1] = '\0';
+    strncpy(_current_station.place, place, sizeof(_current_station.place) - 1);
+    _current_station.place[sizeof(_current_station.place) - 1] = '\0';
+    strncpy(_current_station.country, country, sizeof(_current_station.country) - 1);
+    _current_station.country[sizeof(_current_station.country) - 1] = '\0';
+    _current_station.lat = lat;
+    _current_station.lon = lon;
+    _current_station.valid = true;
+
+    // Clear station cache (no "next" for favorites)
+    _total_stations = 0;
+    _current_station_index = 0;
+
+    return linkplay_play(stream_url.c_str());
 }
 
 String radio_get_stream_url(const char* station_id) {

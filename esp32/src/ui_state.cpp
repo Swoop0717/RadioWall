@@ -59,6 +59,9 @@ UIState::UIState() {
     _volume = 50;
     _paused = false;
     _sleep_timer_minutes = 0;
+    _marker_lat = 0;
+    _marker_lon = 0;
+    _has_marker = false;
 }
 
 void UIState::cycle_slice() {
@@ -133,11 +136,12 @@ void UIState::set_view_mode(ViewMode mode) {
     const char* name = "MAP";
     if (mode == VIEW_MENU) name = "MENU";
     else if (mode == VIEW_VOLUME) name = "VOLUME";
+    else if (mode == VIEW_FAVORITES) name = "FAVORITES";
     Serial.printf("[UIState] View mode: %s\n", name);
 }
 
 bool UIState::is_menu_active() const {
-    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME;
+    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME || _view_mode == VIEW_FAVORITES;
 }
 
 void UIState::set_volume(int vol) {
@@ -168,4 +172,41 @@ void UIState::set_sleep_timer(int minutes) {
 
 int UIState::get_sleep_timer() const {
     return _sleep_timer_minutes;
+}
+
+void UIState::set_marker(float lat, float lon) {
+    _marker_lat = lat;
+    _marker_lon = lon;
+    _has_marker = true;
+}
+
+void UIState::clear_marker() {
+    _has_marker = false;
+}
+
+bool UIState::has_marker() const {
+    return _has_marker;
+}
+
+float UIState::get_marker_lat() const {
+    return _marker_lat;
+}
+
+float UIState::get_marker_lon() const {
+    return _marker_lon;
+}
+
+int UIState::slice_index_for_lon(float lon) const {
+    if (lon >= -150 && lon < -30) return 0;   // Americas
+    if (lon >= -30 && lon < 60) return 1;     // Europe/Africa
+    if (lon >= 60 && lon < 150) return 2;     // Asia
+    return 3;                                  // Pacific
+}
+
+void UIState::set_slice_index(int idx) {
+    if (idx >= 0 && idx < 4) {
+        current_slice_index = idx;
+        Serial.printf("[UIState] Slice set to %d: %s\n",
+                      current_slice_index, slices[current_slice_index].name);
+    }
 }

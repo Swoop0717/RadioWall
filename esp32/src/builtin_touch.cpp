@@ -215,12 +215,14 @@ static void handle_touch_down(uint16_t x, uint16_t y, unsigned long now) {
         _touch_start_zone = ZONE_STATUS_BAR;
     } else if (_ui_state) {
         ViewMode mode = _ui_state->get_view_mode();
-        if (mode == VIEW_MENU) _touch_start_zone = ZONE_MENU;
+        if (mode == VIEW_MENU || mode == VIEW_FAVORITES) _touch_start_zone = ZONE_MENU;
         else if (mode == VIEW_VOLUME) _touch_start_zone = ZONE_VOLUME;
         else _touch_start_zone = ZONE_MAP;
     } else {
         _touch_start_zone = ZONE_MAP;
     }
+
+    // No immediate action for volume - wait for tap (UP event)
 }
 
 // ------------------------------------------------------------------
@@ -231,14 +233,7 @@ static void handle_touch_contact(uint16_t x, uint16_t y) {
     _touch_current_x = x;
     _touch_current_y = y;
 
-    // Live volume updates while dragging
-    if (_touch_start_zone == ZONE_VOLUME && _volume_change_callback) {
-        if (y >= 70 && y <= 560) {
-            int vol = map(y, 560, 70, 0, 100);
-            vol = constrain(vol, 0, 100);
-            _volume_change_callback(vol);
-        }
-    }
+    // Volume is tap-based, no live drag updates
 }
 
 // ------------------------------------------------------------------
@@ -261,10 +256,11 @@ static void handle_touch_up(unsigned long now) {
             break;
 
         case ZONE_VOLUME:
-            // Final volume update at release position
-            if (_volume_change_callback && _touch_current_y >= 70 && _touch_current_y <= 560) {
-                int vol = map(_touch_current_y, 560, 70, 0, 100);
+            // Tap-based volume: use DOWN position (more reliable than UP coordinates)
+            if (_volume_change_callback && _touch_start_y >= 70 && _touch_start_y <= 560) {
+                int vol = map(_touch_start_y, 560, 70, 0, 100);
                 vol = constrain(vol, 0, 100);
+                Serial.printf("[Touch] Volume tap: y=%d -> %d%%\n", _touch_start_y, vol);
                 _volume_change_callback(vol);
             }
             break;
@@ -364,13 +360,23 @@ void builtin_touch_task() {
     uint16_t touch_y = LCD_HEIGHT - (((uint16_t)(temp_buf[2] & 0x0F) << 8) | (uint16_t)temp_buf[3]);
 
     // Handle based on event type
+    // Note: Some AXS15231B firmware repeats DOWN (0) instead of sending
+    // CONTACT (2) while finger is held. If already tracking, treat as CONTACT.
     switch (touch_event) {
-        case 0: // DOWN - finger placed
-            handle_touch_down(touch_x, touch_y, now);
+        case 0: // DOWN - finger placed (or repeated while held)
+            if (_gesture_active) {
+                handle_touch_contact(touch_x, touch_y);
+            } else {
+                handle_touch_down(touch_x, touch_y, now);
+            }
             break;
 
         case 2: // CONTACT - finger held/moving
-            handle_touch_contact(touch_x, touch_y);
+            if (!_gesture_active) {
+                handle_touch_down(touch_x, touch_y, now);
+            } else {
+                handle_touch_contact(touch_x, touch_y);
+            }
             break;
 
         case 1: // UP - finger lifted

@@ -26,6 +26,7 @@
 #include "places_db.h"
 #include "linkplay_client.h"
 #include "radio_client.h"
+#include "favorites.h"
 
 // ------------------------------------------------------------------
 // Global State
@@ -54,12 +55,47 @@ static void on_map_touch(int server_x, int server_y) {
         const StationInfo* station = radio_get_current();
         if (station) {
             ui_state.set_playing(station->title, station->place);
+            ui_state.set_marker(station->lat, station->lon);
             display_update_status_bar(&ui_state);
         }
     } else {
         ui_state.set_status_text("No stations found");
         display_update_status_bar(&ui_state);
     }
+}
+
+// ------------------------------------------------------------------
+// Favorites callbacks
+// ------------------------------------------------------------------
+
+static void on_favorite_play(int index) {
+    const FavoriteStation* fav = favorites_get(index);
+    if (!fav) return;
+
+    ui_state.set_status_text("Loading...");
+    display_show_favorites_view(&ui_state);
+
+    if (radio_play_by_id(fav->station_id, fav->title, fav->place, fav->country,
+                         fav->lat, fav->lon)) {
+        ui_state.set_playing(fav->title, fav->place);
+        ui_state.set_marker(fav->lat, fav->lon);
+
+        // Auto-switch to correct map slice
+        int slice_idx = ui_state.slice_index_for_lon(fav->lon);
+        ui_state.set_slice_index(slice_idx);
+
+        // Go to map view with marker
+        ui_state.set_view_mode(VIEW_MAP);
+        display_show_map_view(&ui_state);
+    } else {
+        ui_state.set_status_text("Failed to play");
+        display_show_favorites_view(&ui_state);
+    }
+}
+
+static void on_favorite_delete(int index) {
+    favorites_remove(index);
+    display_show_favorites_view(&ui_state);
 }
 
 // Helper: toggle between map and menu views
@@ -70,7 +106,41 @@ static void on_ui_button(int button_id) {
 
     ViewMode mode = ui_state.get_view_mode();
 
-    if (mode == VIEW_VOLUME) {
+    if (mode == VIEW_FAVORITES) {
+        // Favorites mode: left = BACK (to menu), right = ADD
+        if (button_id == 0) {
+            Serial.println("[Main] BACK (to menu)");
+            ui_state.set_view_mode(VIEW_MENU);
+            display_show_menu_view(&ui_state);
+        } else if (button_id == 1) {
+            const StationInfo* station = radio_get_current();
+            if (station && station->valid) {
+                if (favorites_contains(station->id)) {
+                    ui_state.set_status_text("Already saved");
+                } else {
+                    FavoriteStation fav;
+                    strncpy(fav.station_id, station->id, 15);
+                    fav.station_id[15] = '\0';
+                    strncpy(fav.title, station->title, 63);
+                    fav.title[63] = '\0';
+                    strncpy(fav.place, station->place, 31);
+                    fav.place[31] = '\0';
+                    strncpy(fav.country, station->country, 3);
+                    fav.country[3] = '\0';
+                    fav.lat = station->lat;
+                    fav.lon = station->lon;
+                    if (favorites_add(fav)) {
+                        ui_state.set_status_text("Added!");
+                    } else {
+                        ui_state.set_status_text("Favorites full");
+                    }
+                }
+            } else {
+                ui_state.set_status_text("Nothing playing");
+            }
+            display_show_favorites_view(&ui_state);
+        }
+    } else if (mode == VIEW_VOLUME) {
         // Volume mode: left = BACK (to menu), right = MUTE
         if (button_id == 0) {
             Serial.println("[Main] BACK (to menu)");
@@ -111,6 +181,12 @@ static void on_ui_button(int button_id) {
 }
 
 static void on_slice_cycle() {
+    if (ui_state.get_view_mode() == VIEW_FAVORITES) {
+        favorites_next_page();
+        display_show_favorites_view(&ui_state);
+        display_wake();
+        return;
+    }
     if (ui_state.is_menu_active()) return;
     ui_state.cycle_slice();
     MapSlice& slice = ui_state.get_current_slice();
@@ -201,10 +277,16 @@ static void on_menu_item(MenuItemId item_id) {
     Serial.printf("[Main] Menu item selected: %d\n", item_id);
 
     switch (item_id) {
-        case MENU_VOLUME:
+        case MENU_VOLUME: {
+            // Fetch actual volume from WiiM before showing slider
+            int current_vol = linkplay_get_volume();
+            if (current_vol >= 0) {
+                ui_state.set_volume(current_vol);
+            }
             ui_state.set_view_mode(VIEW_VOLUME);
             display_show_volume_view(&ui_state);
             break;
+        }
         case MENU_PAUSE_RESUME:
             if (ui_state.get_is_playing() && !ui_state.is_paused()) {
                 linkplay_pause();
@@ -217,7 +299,11 @@ static void on_menu_item(MenuItemId item_id) {
             }
             display_update_status_bar_menu(&ui_state);
             break;
-        case MENU_FAVORITES:    Serial.println("[Main] TODO: Favorites"); break;
+        case MENU_FAVORITES:
+            favorites_set_page(0);
+            ui_state.set_view_mode(VIEW_FAVORITES);
+            display_show_favorites_view(&ui_state);
+            break;
         case MENU_SLEEP_TIMER: {
             // Cycle through presets: Off -> 15 -> 30 -> 60 -> 90 -> Off
             static const int presets[] = {0, 15, 30, 60, 90};
@@ -251,7 +337,12 @@ static void on_menu_item(MenuItemId item_id) {
 
 static void on_menu_touch(int portrait_x, int portrait_y) {
     display_wake();
-    menu_handle_touch(portrait_x, portrait_y, display_get_gfx());
+    ViewMode mode = ui_state.get_view_mode();
+    if (mode == VIEW_FAVORITES) {
+        favorites_handle_touch(portrait_x, portrait_y, display_get_gfx());
+    } else {
+        menu_handle_touch(portrait_x, portrait_y, display_get_gfx());
+    }
 }
 
 // ------------------------------------------------------------------
@@ -303,6 +394,11 @@ void setup() {
     // Initialize menu
     menu_init();
     menu_set_item_callback(on_menu_item);
+
+    // Initialize favorites
+    favorites_init();
+    favorites_set_play_callback(on_favorite_play);
+    favorites_set_delete_callback(on_favorite_delete);
 
     // Initialize buttons (GPIO 0 only - GPIO 21 conflicts with display)
     // Short press: cycle region, Long press: toggle menu, Double-tap: NEXT

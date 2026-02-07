@@ -12,6 +12,7 @@
 #include "ui_state.h"
 #include "world_map.h"
 #include "menu.h"
+#include "favorites.h"
 
 #define LCD_CS TFT_QSPI_CS
 #define LCD_SCLK TFT_QSPI_SCK
@@ -229,6 +230,11 @@ void display_show_map_view(UIState* state) {
     MapSlice& slice = state->get_current_slice();
     if (slice.bitmap && slice.bitmap_size > 0) {
         draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
+    }
+
+    // Draw marker if set
+    if (state->has_marker()) {
+        display_draw_marker_at_latlon(state->get_marker_lat(), state->get_marker_lon(), state);
     }
 
     // === STATUS BAR (580 to 640) ===
@@ -480,4 +486,79 @@ void display_update_volume_bar(UIState* state) {
     gfx->setTextColor(WHITE);
     gfx->setCursor(5, 585);
     gfx->printf("Vol: %d%%", vol);
+}
+
+// ------------------------------------------------------------------
+// Favorites view
+// ------------------------------------------------------------------
+
+void display_show_favorites_view(UIState* state) {
+    if (!gfx) return;
+
+    Serial.println("[Display] Showing favorites view...");
+
+    favorites_render(gfx, favorites_get_page());
+
+    // Status bar: BACK + ADD
+    const int STATUS_Y = 580;
+    gfx->fillRect(0, STATUS_Y, 180, 60, BLACK);
+    gfx->setTextSize(1);
+
+    // Line 1: Context
+    gfx->setTextColor(CYAN);
+    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->print("Favorites");
+
+    // Line 2: Status text or playing info
+    const char* status_text = state->get_status_text();
+    if (status_text[0] != '\0') {
+        gfx->setTextColor(MAGENTA);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(status_text);
+    } else if (state->get_is_playing()) {
+        char info[29];
+        strncpy(info, state->get_station_name(), 28);
+        info[28] = '\0';
+        gfx->setTextColor(GREEN);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(info);
+    } else {
+        gfx->setTextColor(WHITE);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print("Not playing");
+    }
+
+    // Line 3: BACK (left) + ADD (right)
+    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(YELLOW);
+    gfx->setCursor(25, STATUS_Y + 43);
+    gfx->print("BACK");
+
+    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(GREEN);
+    gfx->setCursor(120, STATUS_Y + 43);
+    gfx->print("ADD");
+}
+
+// ------------------------------------------------------------------
+// Map marker at lat/lon
+// ------------------------------------------------------------------
+
+void display_draw_marker_at_latlon(float lat, float lon, UIState* state) {
+    if (!gfx || !state) return;
+
+    MapSlice& slice = state->get_current_slice();
+
+    float lon_range = slice.lon_max - slice.lon_min;
+    if (lon_range < 0) lon_range += 360.0f;
+
+    float norm_lon = lon - slice.lon_min;
+    if (norm_lon < 0) norm_lon += 360.0f;
+    float norm_x = norm_lon / lon_range;
+    float norm_y = (90.0f - lat) / 180.0f;
+
+    int portrait_x = constrain((int)(norm_x * 179), 0, 179);
+    int portrait_y = constrain((int)(norm_y * 579), 0, 579);
+
+    display_draw_touch_feedback(portrait_x, portrait_y, state);
 }

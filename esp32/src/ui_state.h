@@ -13,7 +13,8 @@
 enum ViewMode {
     VIEW_MAP,
     VIEW_MENU,
-    VIEW_VOLUME
+    VIEW_VOLUME,
+    VIEW_FAVORITES
 };
 
 // Vertical map slice definition (longitude-based)
@@ -39,6 +40,8 @@ private:
     int _volume;
     bool _paused;
     int _sleep_timer_minutes;  // 0 = off
+    float _marker_lat, _marker_lon;
+    bool _has_marker;
 
 public:
     UIState();
@@ -76,6 +79,17 @@ public:
     // Sleep timer
     void set_sleep_timer(int minutes);
     int get_sleep_timer() const;
+
+    // Map marker (for favorites and play-from-map)
+    void set_marker(float lat, float lon);
+    void clear_marker();
+    bool has_marker() const;
+    float get_marker_lat() const;
+    float get_marker_lon() const;
+
+    // Slice helpers
+    int slice_index_for_lon(float lon) const;
+    void set_slice_index(int idx);
 };
 
 #endif // UI_STATE_H

@@ -33,6 +33,12 @@ void display_update_status_bar_menu(UIState* state);
 void display_show_volume_view(UIState* state);
 void display_update_volume_bar(UIState* state);
 
+// Favorites view functions
+void display_show_favorites_view(UIState* state);
+
+// Map marker at lat/lon (converts to portrait coords using current slice)
+void display_draw_marker_at_latlon(float lat, float lon, UIState* state);
+
 void display_wake();
 void display_draw_touch_feedback(int x, int y, UIState* state);
 

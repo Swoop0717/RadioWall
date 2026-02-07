@@ -115,6 +115,25 @@ bool linkplay_set_sleep_timer(int minutes) {
     return response == "OK";
 }
 
+int linkplay_get_volume() {
+    String status = make_request("getPlayerStatus", 1);
+    if (status.length() == 0) return -1;
+
+    // Parse "vol" from JSON response: {"vol":"50",...} or {"vol":50,...}
+    int idx = status.indexOf("\"vol\"");
+    if (idx < 0) return -1;
+
+    idx = status.indexOf(':', idx);
+    if (idx < 0) return -1;
+    idx++;
+
+    // Skip whitespace and quotes
+    while (idx < (int)status.length() && (status[idx] == ' ' || status[idx] == '"')) idx++;
+
+    int vol = status.substring(idx).toInt();
+    return constrain(vol, 0, 100);
+}
+
 bool linkplay_set_volume(int volume) {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
