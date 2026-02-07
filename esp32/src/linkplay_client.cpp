@@ -25,16 +25,13 @@ void linkplay_set_ip(const char* wiim_ip) {
     Serial.printf("[LinkPlay] IP: %s\n", wiim_ip);
 }
 
-static String make_request(const char* command, int retries = 2) {
-    if (!_initialized || _wiim_ip.length() == 0) {
-        return "";
-    }
+// Internal: send command to an explicit IP
+static String make_request_impl(const String& target_ip, const char* command, int retries) {
+    if (target_ip.length() == 0) return "";
 
     String path = "/httpapi.asp?command=" + String(command);
     IPAddress ip;
-    if (!ip.fromString(_wiim_ip)) {
-        return "";
-    }
+    if (!ip.fromString(target_ip)) return "";
 
     for (int attempt = 0; attempt <= retries; attempt++) {
         if (attempt > 0) delay(1000);
@@ -48,7 +45,7 @@ static String make_request(const char* command, int retries = 2) {
         }
 
         String request = "GET " + path + " HTTP/1.1\r\n";
-        request += "Host: " + _wiim_ip + "\r\n";
+        request += "Host: " + target_ip + "\r\n";
         request += "Connection: close\r\n\r\n";
         client.print(request);
 
@@ -78,6 +75,12 @@ static String make_request(const char* command, int retries = 2) {
     }
 
     return "";
+}
+
+// Send command to the global master IP
+static String make_request(const char* command, int retries = 2) {
+    if (!_initialized || _wiim_ip.length() == 0) return "";
+    return make_request_impl(_wiim_ip, command, retries);
 }
 
 bool linkplay_play(const char* stream_url) {
@@ -146,6 +149,50 @@ bool linkplay_set_volume(int volume) {
 String linkplay_get_status() {
     return make_request("getPlayerStatus");
 }
+
+// ------------------------------------------------------------------
+// Multiroom
+// ------------------------------------------------------------------
+
+String linkplay_request_to(const char* ip, const char* command, int retries) {
+    if (!ip || strlen(ip) == 0) return "";
+    return make_request_impl(String(ip), command, retries);
+}
+
+bool linkplay_multiroom_join(const char* slave_ip) {
+    if (!_initialized || _wiim_ip.length() == 0) {
+        Serial.println("[LinkPlay] Cannot join: no master IP set");
+        return false;
+    }
+
+    String command = "ConnectMasterAp:JoinGroupMaster:eth" + _wiim_ip + ":wifi0.0.0.0";
+    Serial.printf("[LinkPlay] Joining slave %s to master %s\n", slave_ip, _wiim_ip.c_str());
+    String response = make_request_impl(String(slave_ip), command.c_str(), 2);
+    bool ok = (response == "OK");
+    Serial.printf("[LinkPlay] Join %s: %s\n", slave_ip, ok ? "OK" : "FAILED");
+    return ok;
+}
+
+bool linkplay_multiroom_kick(const char* slave_ip) {
+    String command = "multiroom:SlaveKickout:" + String(slave_ip);
+    Serial.printf("[LinkPlay] Kicking slave %s\n", slave_ip);
+    String response = make_request(command.c_str());
+    bool ok = (response == "OK");
+    Serial.printf("[LinkPlay] Kick %s: %s\n", slave_ip, ok ? "OK" : "FAILED");
+    return ok;
+}
+
+bool linkplay_multiroom_ungroup() {
+    Serial.println("[LinkPlay] Ungrouping all slaves");
+    String response = make_request("multiroom:Ungroup");
+    bool ok = (response == "OK");
+    Serial.printf("[LinkPlay] Ungroup: %s\n", ok ? "OK" : "FAILED");
+    return ok;
+}
+
+// ------------------------------------------------------------------
+// Serial commands
+// ------------------------------------------------------------------
 
 void linkplay_serial_task() {
     // Check for LinkPlay serial commands

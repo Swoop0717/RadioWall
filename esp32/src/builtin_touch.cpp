@@ -211,7 +211,7 @@ static void handle_touch_down(uint16_t x, uint16_t y, unsigned long now) {
         _touch_start_zone = ZONE_STATUS_BAR;
     } else if (_ui_state) {
         ViewMode mode = _ui_state->get_view_mode();
-        if (mode == VIEW_MENU || mode == VIEW_FAVORITES) _touch_start_zone = ZONE_MENU;
+        if (mode == VIEW_MENU || mode == VIEW_FAVORITES || mode == VIEW_SETTINGS) _touch_start_zone = ZONE_MENU;
         else if (mode == VIEW_VOLUME) _touch_start_zone = ZONE_VOLUME;
         else _touch_start_zone = ZONE_MAP;
     } else {

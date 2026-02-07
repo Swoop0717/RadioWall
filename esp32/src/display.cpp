@@ -13,6 +13,7 @@
 #include "world_map.h"
 #include "menu.h"
 #include "favorites.h"
+#include "settings.h"
 #include "radio_client.h"
 
 #define LCD_CS TFT_QSPI_CS
@@ -554,6 +555,64 @@ void display_show_favorites_view(UIState* state) {
     gfx->setTextColor(GREEN);
     gfx->setCursor(120, STATUS_Y + 43);
     gfx->print("ADD");
+}
+
+// ------------------------------------------------------------------
+// Settings view
+// ------------------------------------------------------------------
+
+void display_show_settings_view(UIState* state) {
+    if (!gfx) return;
+
+    Serial.println("[Display] Showing settings view...");
+
+    settings_render(gfx);
+    display_update_status_bar_settings(state);
+
+    Serial.println("[Display] Settings view complete!");
+}
+
+void display_update_status_bar_settings(UIState* state) {
+    if (!gfx) return;
+
+    const int STATUS_Y = 580;
+    gfx->fillRect(0, STATUS_Y, 180, 60, BLACK);
+    gfx->setTextSize(1);
+
+    // Line 1: Context
+    gfx->setTextColor(CYAN);
+    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->print("Settings");
+
+    // Line 2: Status text or playing info
+    const char* status_text = state->get_status_text();
+    if (status_text[0] != '\0') {
+        gfx->setTextColor(MAGENTA);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(status_text);
+    } else if (state->get_is_playing()) {
+        char info[29];
+        strncpy(info, state->get_station_name(), 28);
+        info[28] = '\0';
+        gfx->setTextColor(GREEN);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(info);
+    } else {
+        gfx->setTextColor(WHITE);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print("Not playing");
+    }
+
+    // Line 3: BACK (left) + STOP (right)
+    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(YELLOW);
+    gfx->setCursor(25, STATUS_Y + 43);
+    gfx->print("BACK");
+
+    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(115, STATUS_Y + 43);
+    gfx->print("STOP");
 }
 
 // ------------------------------------------------------------------

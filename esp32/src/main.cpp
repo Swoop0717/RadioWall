@@ -27,6 +27,8 @@
 #include "linkplay_client.h"
 #include "radio_client.h"
 #include "favorites.h"
+#include "settings.h"
+#include <ESPmDNS.h>
 
 // ------------------------------------------------------------------
 // Global State
@@ -99,6 +101,50 @@ static void on_favorite_delete(int index) {
     display_show_favorites_view(&ui_state);
 }
 
+// ------------------------------------------------------------------
+// Settings callback
+// ------------------------------------------------------------------
+
+static void on_device_selected(const char* ip, const char* name) {
+    Serial.printf("[Main] WiiM device selected: %s (%s)\n", name, ip);
+
+    // Stop playback on the old device before switching
+    if (ui_state.get_is_playing()) {
+        linkplay_stop();
+        radio_stop();
+        ui_state.set_stopped();
+    }
+
+    // Ungroup all slaves from the OLD master before switching
+    linkplay_multiroom_ungroup();
+
+    // Switch to new primary
+    linkplay_set_ip(ip);
+
+    // Re-join saved group members to the NEW master
+    char grp_ips[MAX_GROUP_DEVICES][16];
+    int grp_count = settings_get_group_ips(grp_ips, MAX_GROUP_DEVICES);
+    for (int i = 0; i < grp_count; i++) {
+        if (strcmp(grp_ips[i], ip) == 0) continue;  // Skip self
+        Serial.printf("[Main] Re-joining %s to new master\n", grp_ips[i]);
+        linkplay_multiroom_join(grp_ips[i]);
+        delay(500);
+    }
+
+    ui_state.set_status_text("Device set!");
+    display_update_status_bar_settings(&ui_state);
+}
+
+static void on_group_changed(const char* slave_ip, bool joined) {
+    if (joined) {
+        Serial.printf("[Main] Joining %s to multiroom group\n", slave_ip);
+        linkplay_multiroom_join(slave_ip);
+    } else {
+        Serial.printf("[Main] Removing %s from multiroom group\n", slave_ip);
+        linkplay_multiroom_kick(slave_ip);
+    }
+}
+
 // Helper: toggle between map and menu views
 static void toggle_menu();
 
@@ -140,6 +186,18 @@ static void on_ui_button(int button_id) {
                 ui_state.set_status_text("Nothing playing");
             }
             display_show_favorites_view(&ui_state);
+        }
+    } else if (mode == VIEW_SETTINGS) {
+        // Settings mode: left = BACK (to menu), right = STOP
+        if (button_id == 0) {
+            Serial.println("[Main] BACK (to menu)");
+            ui_state.set_view_mode(VIEW_MENU);
+            display_show_menu_view(&ui_state);
+        } else if (button_id == 1) {
+            Serial.println("[Main] STOP (from settings)");
+            radio_stop();
+            ui_state.set_stopped();
+            display_update_status_bar_settings(&ui_state);
         }
     } else if (mode == VIEW_VOLUME) {
         // Volume mode: left = BACK (to menu), right = MUTE
@@ -340,7 +398,12 @@ static void on_menu_item(MenuItemId item_id) {
             break;
         }
         case MENU_EQUALIZER:    Serial.println("[Main] TODO: Equalizer"); break;
-        case MENU_SETTINGS:     Serial.println("[Main] TODO: Settings"); break;
+        case MENU_SETTINGS:
+            ui_state.set_view_mode(VIEW_SETTINGS);
+            display_show_settings_view(&ui_state);  // Shows "Scanning..."
+            settings_start_scan();                   // Blocking ~2s mDNS query
+            display_show_settings_view(&ui_state);  // Shows results
+            break;
         default: break;
     }
 }
@@ -350,6 +413,8 @@ static void on_menu_touch(int portrait_x, int portrait_y) {
     ViewMode mode = ui_state.get_view_mode();
     if (mode == VIEW_FAVORITES) {
         favorites_handle_touch(portrait_x, portrait_y, display_get_gfx());
+    } else if (mode == VIEW_SETTINGS) {
+        settings_handle_touch(portrait_x, portrait_y, display_get_gfx());
     } else {
         menu_handle_touch(portrait_x, portrait_y, display_get_gfx());
     }
@@ -390,13 +455,36 @@ void setup() {
         Serial.println("\n[WiFi] Connection failed!");
     }
 
-    // Initialize LinkPlay client
-    #ifdef WIIM_IP
-        linkplay_init(WIIM_IP);
-        Serial.printf("[LinkPlay] WiiM: %s\n", WIIM_IP);
-    #else
-        Serial.println("[LinkPlay] WIIM_IP not configured");
-    #endif
+    // Initialize mDNS (for device discovery)
+    if (MDNS.begin("radiowall")) {
+        Serial.println("[mDNS] Started as radiowall.local");
+    }
+
+    // Initialize settings (load saved WiiM IP from LittleFS)
+    settings_init();
+    settings_set_device_callback(on_device_selected);
+    settings_set_group_callback(on_group_changed);
+
+    // Initialize LinkPlay client with saved IP (falls back to WIIM_IP from config.h)
+    const char* wiim_ip = settings_get_wiim_ip();
+    if (wiim_ip[0] != '\0') {
+        linkplay_init(wiim_ip);
+        Serial.printf("[LinkPlay] WiiM: %s\n", wiim_ip);
+
+        // Rejoin saved multiroom group members (best effort, single attempt)
+        char grp_ips[MAX_GROUP_DEVICES][16];
+        int grp_count = settings_get_group_ips(grp_ips, MAX_GROUP_DEVICES);
+        if (grp_count > 0) {
+            Serial.printf("[Main] Rejoining %d group member(s)...\n", grp_count);
+            for (int i = 0; i < grp_count; i++) {
+                Serial.printf("[Main]   Joining %s\n", grp_ips[i]);
+                linkplay_multiroom_join(grp_ips[i]);
+                delay(500);
+            }
+        }
+    } else {
+        Serial.println("[LinkPlay] No WiiM IP configured - use Settings to scan");
+    }
 
     // Initialize radio client
     radio_client_init();

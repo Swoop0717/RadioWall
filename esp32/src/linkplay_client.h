@@ -43,4 +43,16 @@ String linkplay_get_status();
 // Process serial commands for testing (W:ip, P:url, S, V:vol, ?)
 void linkplay_serial_task();
 
+// Send a command to an arbitrary device IP (for multiroom slave commands)
+String linkplay_request_to(const char* ip, const char* command, int retries = 2);
+
+// Multiroom: join a slave to the current master
+bool linkplay_multiroom_join(const char* slave_ip);
+
+// Multiroom: kick a slave from the current master
+bool linkplay_multiroom_kick(const char* slave_ip);
+
+// Multiroom: ungroup all slaves from the current master
+bool linkplay_multiroom_ungroup();
+
 #endif // LINKPLAY_CLIENT_H

@@ -137,11 +137,12 @@ void UIState::set_view_mode(ViewMode mode) {
     if (mode == VIEW_MENU) name = "MENU";
     else if (mode == VIEW_VOLUME) name = "VOLUME";
     else if (mode == VIEW_FAVORITES) name = "FAVORITES";
+    else if (mode == VIEW_SETTINGS) name = "SETTINGS";
     Serial.printf("[UIState] View mode: %s\n", name);
 }
 
 bool UIState::is_menu_active() const {
-    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME || _view_mode == VIEW_FAVORITES;
+    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME || _view_mode == VIEW_FAVORITES || _view_mode == VIEW_SETTINGS;
 }
 
 void UIState::set_volume(int vol) {

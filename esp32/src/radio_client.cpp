@@ -341,9 +341,22 @@ bool radio_play_by_id(const char* station_id, const char* title,
     _current_station.lon = lon;
     _current_station.valid = true;
 
-    // Clear station cache (no "next" for favorites)
-    _total_stations = 0;
-    _current_station_index = 0;
+    // Set up next-city hopping from the favorite's location
+    _touch_origin_lat = lat;
+    _touch_origin_lon = lon;
+    _num_visited = 0;
+
+    // Mark this city as visited (find nearest place for its ID)
+    const Place* nearby = places_db_find_nearest(lat, lon);
+    if (nearby) {
+        _visited_place_ids[_num_visited++] = String(nearby->id);
+        _current_place_id = String(nearby->id);
+    }
+
+    // We played 1 station; NEXT will hop to next city
+    _total_stations = 1;
+    _current_station_index = 1;
+    _playing_station_index = 0;
 
     return linkplay_play(stream_url.c_str());
 }

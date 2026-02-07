@@ -14,7 +14,8 @@ enum ViewMode {
     VIEW_MAP,
     VIEW_MENU,
     VIEW_VOLUME,
-    VIEW_FAVORITES
+    VIEW_FAVORITES,
+    VIEW_SETTINGS
 };
 
 // Vertical map slice definition (longitude-based)
