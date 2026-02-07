@@ -22,8 +22,17 @@ bool linkplay_play(const char* stream_url);
 // Stop playback
 bool linkplay_stop();
 
+// Pause playback
+bool linkplay_pause();
+
+// Resume playback
+bool linkplay_resume();
+
 // Set volume (0-100)
 bool linkplay_set_volume(int volume);
+
+// Set sleep timer (0 = cancel, >0 = minutes)
+bool linkplay_set_sleep_timer(int minutes);
 
 // Get current status (returns JSON string)
 String linkplay_get_status();

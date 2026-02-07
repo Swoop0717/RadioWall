@@ -19,8 +19,11 @@ class UIState;
 typedef void (*TouchCallback)(int x, int y);
 
 // Zone-based callbacks
-typedef void (*MapTouchCallback)(int map_x, int map_y);  // Map coordinates (1024×600)
-typedef void (*UIButtonCallback)(int button_id);          // 0=stop, 1=next
+typedef void (*MapTouchCallback)(int map_x, int map_y);          // Map coordinates (1024×600)
+typedef void (*UIButtonCallback)(int button_id);                  // 0=stop, 1=next
+typedef void (*MenuTouchCallback)(int portrait_x, int portrait_y); // Raw display coords
+typedef void (*SwipeCallback)(int direction);                      // -1=left, +1=right
+typedef void (*VolumeChangeCallback)(int volume);                  // 0-100
 
 void builtin_touch_init();
 void builtin_touch_task();
@@ -32,5 +35,8 @@ void builtin_touch_set_callback(TouchCallback cb);
 void builtin_touch_set_map_callback(MapTouchCallback cb);
 void builtin_touch_set_ui_button_callback(UIButtonCallback cb);
 void builtin_touch_set_ui_state(UIState* state);  // For coordinate translation
+void builtin_touch_set_menu_callback(MenuTouchCallback cb);
+void builtin_touch_set_swipe_callback(SwipeCallback cb);
+void builtin_touch_set_volume_change_callback(VolumeChangeCallback cb);
 
 #endif // BUILTIN_TOUCH_H

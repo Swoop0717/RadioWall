@@ -99,6 +99,22 @@ bool linkplay_stop() {
     return response == "OK";
 }
 
+bool linkplay_pause() {
+    String response = make_request("setPlayerCmd:pause");
+    return response == "OK";
+}
+
+bool linkplay_resume() {
+    String response = make_request("setPlayerCmd:resume");
+    return response == "OK";
+}
+
+bool linkplay_set_sleep_timer(int minutes) {
+    String command = "setSleepTimer:" + String(minutes * 60);
+    String response = make_request(command.c_str());
+    return response == "OK";
+}
+
 bool linkplay_set_volume(int volume) {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;

@@ -35,11 +35,22 @@ static TouchCallback _touch_callback = nullptr;
 // Zone-based callbacks
 static MapTouchCallback _map_touch_callback = nullptr;
 static UIButtonCallback _ui_button_callback = nullptr;
+static MenuTouchCallback _menu_touch_callback = nullptr;
+static SwipeCallback _swipe_callback = nullptr;
+static VolumeChangeCallback _volume_change_callback = nullptr;
 static UIState* _ui_state = nullptr;
 
 static unsigned long _last_touch_ms = 0;
 static bool _initialized = false;
 static volatile bool _touch_interrupt = false;
+
+// Gesture tracking state
+enum TouchZone { ZONE_MAP, ZONE_MENU, ZONE_VOLUME, ZONE_STATUS_BAR };
+static bool _gesture_active = false;
+static uint16_t _touch_start_x, _touch_start_y;
+static uint16_t _touch_current_x, _touch_current_y;
+static unsigned long _touch_start_ms = 0;
+static TouchZone _touch_start_zone = ZONE_MAP;
 
 // I2C bus (using Arduino_DriveBus library like working example)
 static std::shared_ptr<Arduino_IIC_DriveBus> IIC_Bus = nullptr;
@@ -113,13 +124,181 @@ void builtin_touch_set_ui_state(UIState* state) {
     _ui_state = state;
 }
 
+void builtin_touch_set_menu_callback(MenuTouchCallback cb) {
+    _menu_touch_callback = cb;
+}
+
+void builtin_touch_set_swipe_callback(SwipeCallback cb) {
+    _swipe_callback = cb;
+}
+
+void builtin_touch_set_volume_change_callback(VolumeChangeCallback cb) {
+    _volume_change_callback = cb;
+}
+
+// ------------------------------------------------------------------
+// Gesture helper: fire map tap at given portrait coordinates
+// ------------------------------------------------------------------
+static void fire_map_tap(uint16_t portrait_x, uint16_t portrait_y) {
+    if (!_ui_state || !_map_touch_callback) return;
+
+    const int MAP_AREA_HEIGHT = 580;
+    const int MAP_WIDTH = 180;
+
+    MapSlice& slice = _ui_state->get_current_slice();
+
+    float norm_x = portrait_x / (float)(MAP_WIDTH - 1);
+    float norm_y = portrait_y / (float)(MAP_AREA_HEIGHT - 1);
+
+    float lon_range = slice.lon_max - slice.lon_min;
+    if (lon_range < 0) lon_range += 360.0f;
+    float lon = slice.lon_min + norm_x * lon_range;
+    float lat = 90.0f - norm_y * 180.0f;
+
+    if (lon > 180.0f) lon -= 360.0f;
+    if (lon < -180.0f) lon += 360.0f;
+
+    int server_x = (int)((lon + 180.0f) / 360.0f * 1024.0f);
+    int server_y = (int)((90.0f - lat) / 180.0f * 600.0f);
+
+    server_x = constrain(server_x, 0, 1023);
+    server_y = constrain(server_y, 0, 599);
+
+    Serial.printf("[Touch] Tap: Portrait(%d,%d) -> Lat/Lon(%.2f,%.2f) -> Server(%d,%d)\n",
+                 portrait_x, portrait_y, lat, lon, server_x, server_y);
+
+    _map_touch_callback(server_x, server_y);
+
+    #if TOUCH_VISUAL_FEEDBACK
+        display_draw_touch_feedback(portrait_x, portrait_y, _ui_state);
+    #endif
+}
+
+// ------------------------------------------------------------------
+// Gesture helper: evaluate map gesture on finger UP
+// ------------------------------------------------------------------
+static void handle_map_gesture(unsigned long now) {
+    int dx = (int)_touch_current_x - (int)_touch_start_x;
+    int dy = (int)_touch_current_y - (int)_touch_start_y;
+    unsigned long duration = now - _touch_start_ms;
+
+    if (abs(dx) > 30 && abs(dx) > abs(dy) && duration < 800) {
+        // Horizontal swipe
+        int direction = (dx > 0) ? 1 : -1;
+        Serial.printf("[Touch] Swipe %s (dx=%d, duration=%lums)\n",
+                     direction > 0 ? "right" : "left", dx, duration);
+        if (_swipe_callback) {
+            _swipe_callback(direction);
+        }
+    } else if (abs(dx) < 15 && abs(dy) < 15) {
+        // Small movement = tap
+        fire_map_tap(_touch_start_x, _touch_start_y);
+    }
+    // else: ambiguous gesture, ignore
+}
+
+// ------------------------------------------------------------------
+// Gesture helper: handle finger DOWN
+// ------------------------------------------------------------------
+static void handle_touch_down(uint16_t x, uint16_t y, unsigned long now) {
+    _gesture_active = true;
+    _touch_start_x = x;
+    _touch_start_y = y;
+    _touch_current_x = x;
+    _touch_current_y = y;
+    _touch_start_ms = now;
+
+    const int MAP_AREA_HEIGHT = 580;
+
+    // Determine zone based on position and current view
+    if (y >= MAP_AREA_HEIGHT) {
+        _touch_start_zone = ZONE_STATUS_BAR;
+    } else if (_ui_state) {
+        ViewMode mode = _ui_state->get_view_mode();
+        if (mode == VIEW_MENU) _touch_start_zone = ZONE_MENU;
+        else if (mode == VIEW_VOLUME) _touch_start_zone = ZONE_VOLUME;
+        else _touch_start_zone = ZONE_MAP;
+    } else {
+        _touch_start_zone = ZONE_MAP;
+    }
+}
+
+// ------------------------------------------------------------------
+// Gesture helper: handle finger CONTACT (held/moving)
+// ------------------------------------------------------------------
+static void handle_touch_contact(uint16_t x, uint16_t y) {
+    if (!_gesture_active) return;
+    _touch_current_x = x;
+    _touch_current_y = y;
+
+    // Live volume updates while dragging
+    if (_touch_start_zone == ZONE_VOLUME && _volume_change_callback) {
+        if (y >= 70 && y <= 560) {
+            int vol = map(y, 560, 70, 0, 100);
+            vol = constrain(vol, 0, 100);
+            _volume_change_callback(vol);
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// Gesture helper: handle finger UP
+// ------------------------------------------------------------------
+static void handle_touch_up(unsigned long now) {
+    if (!_gesture_active) return;
+    _gesture_active = false;
+
+    switch (_touch_start_zone) {
+        case ZONE_MAP:
+            handle_map_gesture(now);
+            break;
+
+        case ZONE_MENU:
+            if (_menu_touch_callback) {
+                Serial.printf("[Touch] Menu tap: (%d, %d)\n", _touch_start_x, _touch_start_y);
+                _menu_touch_callback(_touch_start_x, _touch_start_y);
+            }
+            break;
+
+        case ZONE_VOLUME:
+            // Final volume update at release position
+            if (_volume_change_callback && _touch_current_y >= 70 && _touch_current_y <= 560) {
+                int vol = map(_touch_current_y, 560, 70, 0, 100);
+                vol = constrain(vol, 0, 100);
+                _volume_change_callback(vol);
+            }
+            break;
+
+        case ZONE_STATUS_BAR:
+            if (_ui_button_callback) {
+                if (_touch_start_x < 90) {
+                    Serial.println("[Touch] Status bar: LEFT button");
+                    _ui_button_callback(0);
+                } else {
+                    Serial.println("[Touch] Status bar: RIGHT button");
+                    _ui_button_callback(1);
+                }
+            }
+            break;
+    }
+}
+
+// ------------------------------------------------------------------
+// Main touch task
+// ------------------------------------------------------------------
 void builtin_touch_task() {
     if (!_initialized) return;
 
+    unsigned long now = millis();
+
+    // Timeout: if gesture active but no touch data for 200ms, treat as UP
+    if (_gesture_active && (now - _last_touch_ms > 200)) {
+        handle_touch_up(now);
+    }
+
     // Check for touch interrupt
     if (!_touch_interrupt) {
-        // Also check for serial simulation (for testing)
-        // Only consume if it's a T: command (peek first char)
+        // Serial simulation (for testing)
         if (Serial.available() && Serial.peek() == 'T') {
             String line = Serial.readStringUntil('\n');
             line.trim();
@@ -131,8 +310,8 @@ void builtin_touch_task() {
                     int map_y = line.substring(comma + 1).toInt();
                     Serial.printf("[Touch] Serial simulation: Map (%d, %d)\n", map_x, map_y);
 
-                    if (_touch_callback) {
-                        _touch_callback(map_x, map_y);
+                    if (_map_touch_callback) {
+                        _map_touch_callback(map_x, map_y);
                     }
                 }
             }
@@ -144,8 +323,7 @@ void builtin_touch_task() {
     _touch_interrupt = false;
 
     // Debounce
-    unsigned long now = millis();
-    if (now - _last_touch_ms < 20) {  // 20ms debounce from working example
+    if (now - _last_touch_ms < 20) {
         return;
     }
     _last_touch_ms = now;
@@ -167,129 +345,36 @@ void builtin_touch_task() {
         return;
     }
 
-    // Parse touch data (from working example)
+    // Parse touch data (AXS15231B protocol)
     uint8_t fingers_number = temp_buf[1];
-    uint8_t touch_event = temp_buf[2] >> 4;
+    uint8_t touch_event = temp_buf[2] >> 6;  // Upper 2 bits: 0=DOWN, 1=UP, 2=CONTACT
 
-    // Check for valid touch (1 finger, touch event 0x08)
-    if (fingers_number != 1 || touch_event != 0x08) {
+    // No fingers = finger lifted
+    if (fingers_number == 0) {
+        if (_gesture_active) {
+            handle_touch_up(now);
+        }
         return;
     }
 
-    // Extract raw touch coordinates
+    if (fingers_number != 1) return;
+
+    // Extract raw touch coordinates (unchanged - byte mapping matches hardware orientation)
     uint16_t touch_x = ((uint16_t)(temp_buf[4] & 0x0F) << 8) | (uint16_t)temp_buf[5];
     uint16_t touch_y = LCD_HEIGHT - (((uint16_t)(temp_buf[2] & 0x0F) << 8) | (uint16_t)temp_buf[3]);
 
-    Serial.printf("[Touch] Raw: X=%d, Y=%d, Fingers=%d, Event=%#X\n",
-                  touch_x, touch_y, fingers_number, touch_event);
+    // Handle based on event type
+    switch (touch_event) {
+        case 0: // DOWN - finger placed
+            handle_touch_down(touch_x, touch_y, now);
+            break;
 
-    // Map 180×640 display coordinates to 1024×600 map coordinates
-    int map_x, map_y;
+        case 2: // CONTACT - finger held/moving
+            handle_touch_contact(touch_x, touch_y);
+            break;
 
-    #if TOUCH_MAP_MODE == TOUCH_MAP_MODE_FIT
-        // Preserve aspect ratio (letterbox mode)
-        // The display is 180×640 (aspect 0.28:1, very tall)
-        // Map is 1024×600 (aspect 1.71:1, wider)
-
-        // Scale to fit width: 1024/180 = 5.69
-        float scale = (float)TOUCH_MAX_X / (float)LCD_WIDTH;
-        map_x = (int)(touch_x * scale);
-        map_y = (int)(touch_y * scale);
-
-        // Center vertically in 1024×600 space
-        int scaled_height = (int)(LCD_HEIGHT * scale);
-        int y_offset = (TOUCH_MAX_Y - scaled_height) / 2;
-        map_y += y_offset;
-
-    #else
-        // Stretch mode - use full screen but distorts aspect ratio
-        map_x = (touch_x * TOUCH_MAX_X) / LCD_WIDTH;   // 180 -> 1024
-        map_y = (touch_y * TOUCH_MAX_Y) / LCD_HEIGHT;  // 640 -> 600
-    #endif
-
-    // Clamp to valid range
-    if (map_x < TOUCH_MIN_X) map_x = TOUCH_MIN_X;
-    if (map_x > TOUCH_MAX_X) map_x = TOUCH_MAX_X;
-    if (map_y < TOUCH_MIN_Y) map_y = TOUCH_MIN_Y;
-    if (map_y > TOUCH_MAX_Y) map_y = TOUCH_MAX_Y;
-
-    Serial.printf("[Touch] Display (%d, %d) -> Map (%d, %d)\n",
-                  touch_x, touch_y, map_x, map_y);
-
-    // Zone-based touch handling
-    // NOTE: Display is in landscape mode (640×180) with rotation 3 (270° clockwise)
-    // Map area: y < 150, Status bar: y >= 150
-
-    // Touch coordinates are in portrait mode (0-179 for x, 0-639 for y)
-    // Rotation 3 (270° CW / 90° CCW) transformation:
-    uint16_t landscape_x = LCD_HEIGHT - touch_y;  // Map 0-639 portrait height to 640-0 landscape width
-    // Portrait mode: 180×640 (width × height)
-    // Map area: 180×580 (top)
-    // Status bar: 180×60 (bottom)
-    uint16_t portrait_x = touch_x;  // 0-179
-    uint16_t portrait_y = touch_y;  // 0-639
-
-    const int MAP_AREA_HEIGHT = 580;
-    const int MAP_WIDTH = 180;
-
-    if (portrait_y < MAP_AREA_HEIGHT) {
-        // Map area touched - full screen, no padding
-        if (_ui_state && _map_touch_callback) {
-            MapSlice& slice = _ui_state->get_current_slice();
-
-            // Normalize coordinates (0.0 to 1.0) - full map area
-            float norm_x = portrait_x / (float)(MAP_WIDTH - 1);
-            float norm_y = portrait_y / (float)(MAP_AREA_HEIGHT - 1);
-
-            // portrait_x spans the NARROW axis (180px) = LONGITUDE within slice
-            float lon_range = slice.lon_max - slice.lon_min;
-            if (lon_range < 0) lon_range += 360.0f;  // Handle Pacific wrapping
-            float lon = slice.lon_min + norm_x * lon_range;
-
-            // portrait_y spans the TALL axis (580px) = LATITUDE (north at top)
-            float lat = 90.0f - norm_y * 180.0f;  // top=90°N, bottom=90°S
-
-            // Normalize longitude to [-180, 180]
-            if (lon > 180.0f) lon -= 360.0f;
-            if (lon < -180.0f) lon += 360.0f;
-
-            // Convert to server's 1024×600 equirectangular map space (for MQTT compatibility)
-            int server_x = (int)((lon + 180.0f) / 360.0f * 1024.0f);
-            int server_y = (int)((90.0f - lat) / 180.0f * 600.0f);
-
-            // Clamp to valid range
-            if (server_x < 0) server_x = 0;
-            if (server_x > 1023) server_x = 1023;
-            if (server_y < 0) server_y = 0;
-            if (server_y > 599) server_y = 599;
-
-            Serial.printf("[Touch] Map: Portrait(%d,%d) -> Lat/Lon(%.2f,%.2f) -> Server(%d,%d)\n",
-                         portrait_x, portrait_y, lat, lon, server_x, server_y);
-
-            _map_touch_callback(server_x, server_y);
-
-            // Visual feedback for map touches only (if enabled)
-            #if TOUCH_VISUAL_FEEDBACK
-                display_draw_touch_feedback(touch_x, touch_y, _ui_state);
-            #endif
-        }
-    } else {
-        // Status bar touched - detect button regions (portrait: 180px wide)
-        // STOP button: x < 90 (left half), NEXT button: x >= 90 (right half)
-        if (_ui_button_callback) {
-            if (portrait_x < 90) {
-                Serial.println("[Touch] Status bar: STOP button");
-                _ui_button_callback(0);  // 0 = STOP
-            } else {
-                Serial.println("[Touch] Status bar: NEXT button");
-                _ui_button_callback(1);  // 1 = NEXT
-            }
-        }
-        // No visual feedback for button touches - keeps red X on map
-    }
-
-    // Legacy callback for backward compatibility
-    if (_touch_callback) {
-        _touch_callback(map_x, map_y);
+        case 1: // UP - finger lifted
+            handle_touch_up(now);
+            break;
     }
 }

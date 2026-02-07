@@ -54,10 +54,22 @@ UIState::UIState() {
     is_playing = false;
     station_name[0] = '\0';
     location[0] = '\0';
+    status_text[0] = '\0';
+    _view_mode = VIEW_MAP;
+    _volume = 50;
+    _paused = false;
+    _sleep_timer_minutes = 0;
 }
 
 void UIState::cycle_slice() {
     current_slice_index = (current_slice_index + 1) % 4;
+    Serial.printf("[UIState] Cycled to slice %d: %s\n",
+                  current_slice_index,
+                  slices[current_slice_index].name);
+}
+
+void UIState::cycle_slice_reverse() {
+    current_slice_index = (current_slice_index + 3) % 4;  // +3 mod 4 = -1
     Serial.printf("[UIState] Cycled to slice %d: %s\n",
                   current_slice_index,
                   slices[current_slice_index].name);
@@ -73,6 +85,8 @@ int UIState::get_current_slice_index() const {
 
 void UIState::set_playing(const char* station, const char* loc) {
     is_playing = true;
+    _paused = false;
+    status_text[0] = '\0';
     strncpy(station_name, station, sizeof(station_name) - 1);
     station_name[sizeof(station_name) - 1] = '\0';
 
@@ -84,6 +98,8 @@ void UIState::set_playing(const char* station, const char* loc) {
 
 void UIState::set_stopped() {
     is_playing = false;
+    _paused = false;
+    status_text[0] = '\0';
     Serial.println("[UIState] Playback stopped");
 }
 
@@ -97,4 +113,59 @@ const char* UIState::get_station_name() const {
 
 const char* UIState::get_location() const {
     return location;
+}
+
+void UIState::set_status_text(const char* text) {
+    strncpy(status_text, text, sizeof(status_text) - 1);
+    status_text[sizeof(status_text) - 1] = '\0';
+}
+
+const char* UIState::get_status_text() const {
+    return status_text;
+}
+
+ViewMode UIState::get_view_mode() const {
+    return _view_mode;
+}
+
+void UIState::set_view_mode(ViewMode mode) {
+    _view_mode = mode;
+    const char* name = "MAP";
+    if (mode == VIEW_MENU) name = "MENU";
+    else if (mode == VIEW_VOLUME) name = "VOLUME";
+    Serial.printf("[UIState] View mode: %s\n", name);
+}
+
+bool UIState::is_menu_active() const {
+    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME;
+}
+
+void UIState::set_volume(int vol) {
+    _volume = constrain(vol, 0, 100);
+}
+
+int UIState::get_volume() const {
+    return _volume;
+}
+
+void UIState::set_paused(bool paused) {
+    _paused = paused;
+    Serial.printf("[UIState] %s\n", paused ? "Paused" : "Resumed");
+}
+
+bool UIState::is_paused() const {
+    return _paused;
+}
+
+void UIState::set_sleep_timer(int minutes) {
+    _sleep_timer_minutes = minutes;
+    if (minutes > 0) {
+        Serial.printf("[UIState] Sleep timer: %d min\n", minutes);
+    } else {
+        Serial.println("[UIState] Sleep timer: off");
+    }
+}
+
+int UIState::get_sleep_timer() const {
+    return _sleep_timer_minutes;
 }

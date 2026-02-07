@@ -25,6 +25,14 @@ void display_show_map_view(UIState* state);         // Full redraw
 void display_update_status_bar(UIState* state);     // Status bar only
 void display_refresh_map_only(UIState* state);      // Map area only
 
+// Menu view functions
+void display_show_menu_view(UIState* state);
+void display_update_status_bar_menu(UIState* state);
+
+// Volume view functions
+void display_show_volume_view(UIState* state);
+void display_update_volume_bar(UIState* state);
+
 void display_wake();
 void display_draw_touch_feedback(int x, int y, UIState* state);
 

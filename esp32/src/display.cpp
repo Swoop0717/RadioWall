@@ -11,6 +11,7 @@
 #include "Arduino_GFX_Library.h"
 #include "ui_state.h"
 #include "world_map.h"
+#include "menu.h"
 
 #define LCD_CS TFT_QSPI_CS
 #define LCD_SCLK TFT_QSPI_SCK
@@ -260,30 +261,29 @@ void display_update_status_bar(UIState* state) {
     gfx->setTextColor(YELLOW);
     gfx->println(slice.name);
 
-    // Line 2: Station info or prompt
-    if (state->get_is_playing()) {
-        // Combine station and location, truncate if needed
-        // Size 1 font: ~6px per char, 170px available = ~28 chars max
+    // Line 2: Status text (temporary) > station info > tap prompt
+    const char* status_text = state->get_status_text();
+    if (status_text[0] != '\0') {
+        gfx->setTextColor(MAGENTA);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(status_text);
+    } else if (state->get_is_playing()) {
         char combined[64];
         snprintf(combined, sizeof(combined), "%s | %s",
                  state->get_station_name(), state->get_location());
-
-        // Truncate if too long (28 chars for line 2, keep some margin)
         if (strlen(combined) > 28) {
             combined[25] = '.';
             combined[26] = '.';
             combined[27] = '.';
             combined[28] = '\0';
         }
-
         gfx->setTextColor(WHITE);
         gfx->setCursor(5, STATUS_Y + 20);
         gfx->print(combined);
     } else {
-        // Show tap prompt
         gfx->setTextColor(WHITE);
         gfx->setCursor(5, STATUS_Y + 20);
-        gfx->println("Tap map to play");
+        gfx->print("Tap map to play");
     }
 
     // Line 3: STOP and NEXT buttons (90px each)
@@ -317,4 +317,167 @@ void display_refresh_map_only(UIState* state) {
     }
 
     Serial.println("[Display] Map refresh complete");
+}
+
+/**
+ * Show full menu view (menu items + status bar)
+ */
+void display_show_menu_view(UIState* state) {
+    if (!gfx) return;
+
+    Serial.println("[Display] Showing menu view...");
+
+    menu_render(gfx);
+    display_update_status_bar_menu(state);
+
+    Serial.println("[Display] Menu view complete!");
+}
+
+/**
+ * Update status bar for menu mode (BACK + STOP)
+ */
+void display_update_status_bar_menu(UIState* state) {
+    if (!gfx) return;
+
+    const int STATUS_Y = 580;
+    const int STATUS_H = 60;
+    const int STATUS_W = 180;
+
+    gfx->fillRect(0, STATUS_Y, STATUS_W, STATUS_H, BLACK);
+    gfx->setTextSize(1);
+
+    // Line 1: Context label
+    gfx->setTextColor(CYAN);
+    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->print("Menu");
+
+    // Line 2: Playback info if playing
+    if (state->get_is_playing()) {
+        char info[32];
+        strncpy(info, state->get_station_name(), sizeof(info) - 1);
+        info[sizeof(info) - 1] = '\0';
+        if (strlen(info) > 28) {
+            info[25] = '.';
+            info[26] = '.';
+            info[27] = '.';
+            info[28] = '\0';
+        }
+        gfx->setTextColor(GREEN);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print(info);
+    } else {
+        gfx->setTextColor(WHITE);
+        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->print("Not playing");
+    }
+
+    // Line 3: BACK (left) + STOP (right)
+    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(YELLOW);
+    gfx->setCursor(25, STATUS_Y + 43);
+    gfx->print("BACK");
+
+    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(115, STATUS_Y + 43);
+    gfx->print("STOP");
+}
+
+// ------------------------------------------------------------------
+// Volume view
+// ------------------------------------------------------------------
+
+// Volume slider layout constants
+static const int VOL_SLIDER_X = 40;
+static const int VOL_SLIDER_W = 100;
+static const int VOL_SLIDER_TOP = 70;
+static const int VOL_SLIDER_BOTTOM = 560;
+static const int VOL_SLIDER_H = VOL_SLIDER_BOTTOM - VOL_SLIDER_TOP;  // 490
+
+/**
+ * Show full volume control view
+ */
+void display_show_volume_view(UIState* state) {
+    if (!gfx) return;
+
+    Serial.println("[Display] Showing volume view...");
+
+    gfx->fillScreen(BLACK);
+
+    // Title
+    gfx->setTextSize(2);
+    gfx->setTextColor(CYAN);
+    gfx->setCursor(40, 10);
+    gfx->print("Volume");
+
+    // Draw the slider
+    display_update_volume_bar(state);
+
+    // Status bar: BACK + MUTE
+    const int STATUS_Y = 580;
+    gfx->fillRect(0, STATUS_Y, 180, 60, BLACK);
+    gfx->setTextSize(1);
+
+    // Line 1: Current volume as text
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->printf("Vol: %d%%", state->get_volume());
+
+    // Line 3: BACK (left) + MUTE (right)
+    gfx->fillRect(0, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(YELLOW);
+    gfx->setCursor(25, STATUS_Y + 43);
+    gfx->print("BACK");
+
+    gfx->fillRect(90, STATUS_Y + 35, 90, 25, 0x0841);
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(115, STATUS_Y + 43);
+    gfx->print("MUTE");
+
+    Serial.println("[Display] Volume view complete!");
+}
+
+/**
+ * Update just the volume slider bar and percentage (fast, for live dragging)
+ */
+void display_update_volume_bar(UIState* state) {
+    if (!gfx) return;
+
+    int vol = state->get_volume();
+
+    // Calculate fill height (bottom-up)
+    int fill_h = (int)((vol / 100.0f) * VOL_SLIDER_H);
+    int fill_y = VOL_SLIDER_BOTTOM - fill_h;
+
+    // Empty part (dark gray)
+    if (fill_y > VOL_SLIDER_TOP) {
+        gfx->fillRect(VOL_SLIDER_X, VOL_SLIDER_TOP, VOL_SLIDER_W,
+                       fill_y - VOL_SLIDER_TOP, 0x2104);  // Dark gray
+    }
+
+    // Filled part (cyan)
+    if (fill_h > 0) {
+        gfx->fillRect(VOL_SLIDER_X, fill_y, VOL_SLIDER_W, fill_h, CYAN);
+    }
+
+    // Update percentage text (clear area first)
+    gfx->fillRect(40, 38, 100, 24, BLACK);
+    gfx->setTextSize(3);
+    gfx->setTextColor(WHITE);
+    // Center the text roughly
+    if (vol < 10) {
+        gfx->setCursor(68, 38);
+    } else if (vol < 100) {
+        gfx->setCursor(50, 38);
+    } else {
+        gfx->setCursor(32, 38);
+    }
+    gfx->printf("%d%%", vol);
+
+    // Update status bar volume text
+    gfx->fillRect(0, 580, 180, 15, BLACK);
+    gfx->setTextSize(1);
+    gfx->setTextColor(WHITE);
+    gfx->setCursor(5, 585);
+    gfx->printf("Vol: %d%%", vol);
 }
