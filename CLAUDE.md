@@ -772,36 +772,6 @@ Many small cities have only 1 station in Radio.garden. NEXT will immediately hop
 
 Implemented in `history.cpp/h`. Ring buffer of 20 stations, auto-recorded on play, deduplication, LittleFS persistence (`/history.json`), paginated list view with tap-to-replay. Accessible via Menu → History.
 
-#### 3. Enhanced Playback Info (LinkPlay getPlayerStatus)
-
-Display more info from WiiM using `getPlayerStatus` API:
-
-| Field | Description |
-|-------|-------------|
-| `Title` | Current track/stream title |
-| `Artist` | Artist name (if available) |
-| `Album` | Album name (if available) |
-| `status` | play/pause/stop/loading |
-| `vol` | Current volume (0-100) |
-| `mute` | Mute state (0/1) |
-| `mode` | Playback mode (see below) |
-| `type` | Source type |
-
-**Playback modes:**
-- `10` = Network stream (HTTP)
-- `31` = Spotify Connect
-- `40` = Line In
-- `41` = Bluetooth
-- `43` = Optical
-- `99` = DLNA/UPnP
-
-**Implementation:**
-```cpp
-// Poll every 5 seconds when playing
-String status = linkplay_get("/httpapi.asp?command=getPlayerStatus");
-// Parse JSON: {"status":"play","vol":"50","Title":"Radio Wien",...}
-```
-
 #### ~~4. Volume Control~~ → DONE (`menu.cpp`, `linkplay_client.cpp`)
 
 - Menu → Volume view with tap-based vertical slider (0-100%)
@@ -826,32 +796,6 @@ Show serial-style logs on the ESP32 display:
 
 Implemented in `settings.cpp/h`. Uses ESPmDNS to query `_linkplay._tcp` service. Shows discovered devices in Settings screen. Tap to select primary device, right zone to toggle multiroom grouping. Persisted to `/settings.json`.
 
-#### 8. Distance Display
-
-Show how far you are from the current station's city:
-
-- **Display**: "Vienna, AT (243 km)" in status bar
-- **Calculation**: Haversine distance from touch point to city center
-- **Update**: Recalculate on each new touch or city change
-- **Implementation**: Already have lat/lon for both points
-
-```cpp
-// Haversine formula for distance between two points
-float haversine_km(float lat1, float lon1, float lat2, float lon2) {
-    const float R = 6371.0f;  // Earth radius in km
-    float dlat = radians(lat2 - lat1);
-    float dlon = radians(lon2 - lon1);
-    float a = sin(dlat/2) * sin(dlat/2) +
-              cos(radians(lat1)) * cos(radians(lat2)) *
-              sin(dlon/2) * sin(dlon/2);
-    float c = 2 * atan2(sqrt(a), sqrt(1-a));
-    return R * c;
-}
-
-// Store touch coordinates for distance calculation
-static float _touch_lat, _touch_lon;
-```
-
 #### ~~9. Dynamic Search (Next-City Hopping)~~ → DONE (`radio_client.cpp`, `places_db.cpp`)
 
 - NEXT cycles through all stations at current city
@@ -872,57 +816,39 @@ static float _touch_lat, _touch_lon;
 - Status bar: 3 lines — city+count, station name, [STOP][NEXT] buttons
 - Text truncated with "..." at 28 chars
 
-#### 12. Equalizer Control
-
-WiiM supports built-in equalizer presets:
-
-- **Presets**: off, classic, popular, jazzy, vocal
-- **Serial**: `E:classic` or `E:0` (off), `E:1` (classic), etc.
-- **API**: `setPlayerCmd:equalizer:<mode>`
-- **UI**: Could add to long-press menu
-
-```cpp
-bool linkplay_set_equalizer(const char* mode) {
-    // mode: "off", "classic", "popular", "jazzy", "vocal"
-    String cmd = "setPlayerCmd:equalizer:" + String(mode);
-    return make_request(cmd.c_str()).length() > 0;
-}
-```
-
 #### ~~13. Sleep Timer~~ → DONE (`menu.cpp`, `linkplay_client.cpp`)
 
 - Menu → Sleep Timer cycles through presets: Off/15/30/60/90 min
 - Uses LinkPlay `setSleepTimer:<seconds>` API
 
-### Planned Features (Short-term)
+### Planned Features
 
-#### 14. WiiM Hardware Presets
+#### 21. Double-Tap Zoom with 5 Levels
 
-Trigger WiiM's saved presets (configured via WiiM app):
+Zoom into the map by double-tapping on the map area. Adds zoom levels 4x and 5x for finer geographic detail.
 
-- **Presets**: 1-6 hardware buttons on WiiM devices
-- **Serial**: `PRESET:1` through `PRESET:6`
-- **API**: `MCUKeyShortClick:<num>` (0-5 for presets 1-6)
-- **Use case**: Quick access to favorite TuneIn/Spotify stations saved on WiiM
+- **Gesture**: Double-tap on map area → zoom in one level, centered on tap location
+- **Zoom cycle**: 1x → 2x → 3x → 4x → 5x → (next double-tap) → back to 1x
+- **Single tap**: Always plays radio (with ~300ms delay to distinguish from double-tap)
+- **Swipes**: Always navigate between slices/tiles (unchanged)
+- **Current zoom via Settings**: Still available as fallback
 
-```cpp
-bool linkplay_trigger_preset(int preset_num) {
-    // preset_num: 1-6 (maps to MCU key 0-5)
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "MCUKeyShortClick:%d", preset_num - 1);
-    return make_request(cmd).length() > 0;
-}
-```
+**Implementation areas:**
+| Area | Work needed |
+|------|-------------|
+| `builtin_touch.cpp` | Double-tap detection on map area (~300ms window, proximity check) |
+| `generate_map_bitmaps.py` | Generate zoom 4x and 5x tile data; may need Natural Earth 1:10m for detail |
+| `world_map.cpp/h` | Handle zoom 4x/5x tile loading and rendering |
+| `ui_state.cpp/h` | Track current zoom level, center-on-tap logic |
+| `settings.cpp` | Update zoom level options (1-5 instead of 1-3) |
+| LittleFS | New map files: `/maps/zoom4.bin`, `/maps/zoom5.bin` |
 
-#### 15. Notification/Prompt Sounds
+**Considerations:**
+- Storage: zoom4/zoom5 bins need to fit in LittleFS alongside places.bin (~634KB) and existing zoom files (~215KB)
+- Map quality: Higher zooms may need 1:10m Natural Earth data instead of 1:50m to avoid blocky coastlines
+- Touch delay: Single tap gets ~300ms slower due to double-tap disambiguation
 
-Play short audio notifications without interrupting main stream:
-
-- **API**: `playPromptUrl:<url>`
-- **Use case**: Play a "ding" sound when station changes
-- **Note**: Requires hosting the sound file somewhere accessible
-
-### Planned Features (Medium-term)
+### Completed Planned Features (Medium-term)
 
 #### ~~16. Closeup Regional Maps~~ ✅ IMPLEMENTED
 
@@ -961,15 +887,6 @@ Play directly from ESP32 via Bluetooth A2DP:
 - **Use case**: No WiFi speaker needed, use any BT speaker/headphones
 - **Challenge**: ESP32 must decode audio stream (CPU intensive)
 - **Alternative**: Some BT speakers accept URL via app - could send URL instead
-
-#### 20. Web Configuration Interface
-
-ESP32 hosts config webpage:
-
-- **Features**: Set WiFi, WiiM IP, manage favorites, view history
-- **Access**: `http://<esp32-ip>/`
-- **Library**: ESPAsyncWebServer
-- **Benefit**: No serial connection needed for setup
 
 ### LinkPlay API Reference
 
@@ -1047,10 +964,7 @@ Common commands for WiiM/LinkPlay devices:
 | 4 | Volume Control | ~20 | LinkPlay `setPlayerCmd:vol` already works. Add serial cmd + UI. |
 | 5 | Pause/Resume | ~15 | Same as stop pattern. API: `setPlayerCmd:pause/resume`. |
 | 10 | Station Count Display | ~10 | Data exists (`_current_station_index`). Update status bar to show "(2/5)". |
-| 12 | Equalizer Control | ~25 | LinkPlay `setPlayerCmd:equalizer:classic`. Serial command wrapper. |
 | 13 | Sleep Timer | ~20 | LinkPlay `setSleepTimer:<seconds>`. Simple wrapper. |
-| 14 | WiiM Hardware Presets | ~15 | LinkPlay `MCUKeyShortClick:<0-5>`. Serial command `PRESET:1`. |
-| 8 | Distance Display | ~30 | Haversine formula (documented above). Store touch coords, calculate on play. |
 
 #### 🟡 Medium Features
 
@@ -1058,10 +972,8 @@ Common commands for WiiM/LinkPlay devices:
 |---|---------|-------|-------|
 | 1 | Favorite Stations | ~150 | LittleFS + ArduinoJson pattern. New `favorites.cpp`, JSON read/write, gesture detection. |
 | 2 | Playback History | ~100 | In-memory ring buffer. Optional LittleFS persistence. Similar to station cache. |
-| 3 | Enhanced Playback Info | ~80 | `getPlayerStatus` returns JSON with Title/Artist/Album. Polling loop + display. |
 | 7 | WiiM Auto-Discovery | ~100 | [ESPmDNS](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/protocols/mdns.html) built-in. [ESP32SSDP](https://github.com/luc-github/ESP32SSDP) available. Query `_linkplay._tcp`. |
 | 9 | Dynamic Search | ~80 | Modify `places_db_find_nearest()` to return top 10 cities. Cycle cities when stations exhausted. |
-| 15 | Notification Sounds | ~40 | LinkPlay `playPromptUrl:<url>`. Need hosted sound file or embedded web server. |
 | 11 | Display Layout Overhaul | ~100 | Reduce map height, text truncation with `...`, show station count. Refactor `display.cpp`. |
 
 #### 🟠 Moderate-Hard Features
@@ -1071,7 +983,7 @@ Common commands for WiiM/LinkPlay devices:
 | 6 | Debug Log Display | ~200 | Ring buffer for Serial, redirect output, triple-tap toggle, overlay rendering. |
 | 16 | Closeup Regional Maps | ~300 | New high-res bitmaps, zoom gestures, pan navigation. Python tooling updates. |
 | 17 | Multiroom Support | ~250 | [LinkPlay multiroom API](https://developer.arylic.com/httpapi/) documented. Device discovery + selection UI. |
-| 20 | Web Configuration UI | ~400 | [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) + [ESPAsync_WiFiManager](https://github.com/khoih-prog/ESPAsync_WiFiManager). HTML/CSS/JS + captive portal. |
+| 21 | Double-Tap Zoom (5 levels) | ~300 | Double-tap detection, zoom 4x/5x map generation, center-on-tap logic, 1:10m map data for detail. |
 
 #### 🔴 Hard Features
 
@@ -1081,16 +993,6 @@ Common commands for WiiM/LinkPlay devices:
 | 19 | Bluetooth A2DP Output | ~1000+ | [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) exists but ESP32 must decode audio streams (MP3/AAC). Need decoder library, significant memory, architecture change. Current design sends URLs to WiiM; BT requires ESP32 to fetch+decode+stream. |
 
 ### Implementation Priority Recommendations
-
-**Quick wins (implement first):**
-1. Volume Control (#4) + Pause/Resume (#5) - trivial, high value
-2. Station Count Display (#10) - almost no code, better UX
-3. Distance Display (#8) - fun feature, simple Haversine math
-
-**Best ROI for medium effort:**
-1. Favorites (#1) - users will want this
-2. WiiM Auto-Discovery (#7) - removes hardcoded IP friction
-3. Dynamic Search (#9) - makes NEXT button much more useful
 
 **Consider dropping or deferring:**
 - UPnP/DLNA (#18) - LinkPlay works well, not worth the protocol complexity
@@ -1109,5 +1011,4 @@ Common commands for WiiM/LinkPlay devices:
 **Libraries to add for specific features:**
 - mDNS: Built-in `ESPmDNS.h` (no install needed)
 - SSDP: [ESP32SSDP](https://github.com/luc-github/ESP32SSDP) via PlatformIO
-- Web server: [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) + AsyncTCP
 - Bluetooth: [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) (if pursuing #19)
