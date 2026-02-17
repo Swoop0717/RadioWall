@@ -2,10 +2,12 @@
 """
 Generate RLE-compressed world map bitmaps for RadioWall ESP32.
 
-Downloads Natural Earth 1:110m data and renders:
+Downloads Natural Earth data and renders:
   - 4 base (1x) map slices with country borders -> PROGMEM C header
-  - 16 zoomed (2x) sub-maps -> LittleFS binary file
-  - 36 zoomed (3x) sub-maps -> LittleFS binary file
+  - 16 zoomed (2x) sub-maps -> LittleFS binary file (110m data)
+  - 36 zoomed (3x) sub-maps -> LittleFS binary file (110m data)
+  - 64 zoomed (4x) sub-maps -> LittleFS binary file (50m data)
+  - 100 zoomed (5x) sub-maps -> LittleFS binary file (50m data)
 
 3-Color RLE format: 0=ocean (black), 1=land (white), 2=border (gray)
 
@@ -13,6 +15,8 @@ Output:
   ../esp32/src/world_map_data.h   (1x PROGMEM arrays)
   ../esp32/data/maps/zoom2.bin    (2x LittleFS binary)
   ../esp32/data/maps/zoom3.bin    (3x LittleFS binary)
+  ../esp32/data/maps/zoom4.bin    (4x LittleFS binary)
+  ../esp32/data/maps/zoom5.bin    (5x LittleFS binary)
 
 Usage:
     python generate_map_bitmaps.py
@@ -49,11 +53,18 @@ LONGITUDE_SLICES = [
 ]
 
 # Zoom levels to generate (1x is always generated as PROGMEM)
-ZOOM_LEVELS = [2, 3]
+ZOOM_LEVELS = [2, 3, 4, 5]
 
-# Natural Earth data URLs (1:110m resolution, public domain)
+# Natural Earth data URLs (public domain)
+# 1:110m for base maps and zoom 2-3 (coarse, small download)
 NE_COUNTRIES_URL = "https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip"
 NE_BORDERS_URL = "https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_boundary_lines_land.zip"
+# 1:50m for zoom 4-5 (finer detail, avoids blocky coastlines at high zoom)
+NE_COUNTRIES_50M_URL = "https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admin_0_countries.zip"
+NE_BORDERS_50M_URL = "https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admin_0_boundary_lines_land.zip"
+
+# Zoom levels that use 50m data (higher detail)
+HIGH_RES_ZOOM_THRESHOLD = 4
 
 # Output paths
 SCRIPT_DIR = Path(__file__).parent
@@ -327,11 +338,13 @@ def main():
     print("=" * 62)
     print()
 
-    # Download Natural Earth data
+    # Download Natural Earth data (110m for base/low zoom, 50m for high zoom)
     print("Loading Natural Earth data...")
     try:
-        countries_path = download_and_extract(NE_COUNTRIES_URL, "country polygons")
-        borders_path = download_and_extract(NE_BORDERS_URL, "border lines")
+        countries_path = download_and_extract(NE_COUNTRIES_URL, "country polygons (110m)")
+        borders_path = download_and_extract(NE_BORDERS_URL, "border lines (110m)")
+        countries_50m_path = download_and_extract(NE_COUNTRIES_50M_URL, "country polygons (50m)")
+        borders_50m_path = download_and_extract(NE_BORDERS_50M_URL, "border lines (50m)")
     except Exception as e:
         print(f"[ERROR] Error downloading Natural Earth data: {e}")
         sys.exit(1)
@@ -340,7 +353,10 @@ def main():
     print("Loading geometries...")
     countries = gpd.read_file(countries_path)
     borders = gpd.read_file(borders_path)
-    print(f"[OK] Loaded {len(countries)} countries, {len(borders)} border segments")
+    countries_50m = gpd.read_file(countries_50m_path)
+    borders_50m = gpd.read_file(borders_50m_path)
+    print(f"[OK] 110m: {len(countries)} countries, {len(borders)} border segments")
+    print(f"[OK]  50m: {len(countries_50m)} countries, {len(borders_50m)} border segments")
     print()
 
     # -- 1x bitmaps (PROGMEM) --------------------------------------
@@ -391,7 +407,12 @@ def main():
     for zoom in ZOOM_LEVELS:
         print()
         print("-" * 50)
-        print(f"  Generating {zoom}x zoom maps (LittleFS)")
+        # Use 50m data for high zoom levels
+        use_50m = zoom >= HIGH_RES_ZOOM_THRESHOLD
+        res_label = "50m" if use_50m else "110m"
+        z_countries = countries_50m if use_50m else countries
+        z_borders = borders_50m if use_50m else borders
+        print(f"  Generating {zoom}x zoom maps (LittleFS, {res_label} data)")
         print(f"  {4 * zoom * zoom} sub-maps ({zoom}x{zoom} grid per slice)")
         print("-" * 50)
 
@@ -410,7 +431,7 @@ def main():
                     print(f"  {label}: lon({sub_lon_min:.0f}..{sub_lon_max:.0f}) "
                           f"lat({sub_lat_min:.0f}..{sub_lat_max:.0f})", end="")
 
-                    bitmap = render_region(countries, borders,
+                    bitmap = render_region(z_countries, z_borders,
                                            sub_lon_min, sub_lon_max,
                                            sub_lat_min, sub_lat_max)
                     rle = rle_compress(bitmap)

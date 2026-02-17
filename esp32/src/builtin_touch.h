@@ -24,6 +24,7 @@ typedef void (*UIButtonCallback)(int button_id);                  // 0=stop, 1=n
 typedef void (*MenuTouchCallback)(int portrait_x, int portrait_y); // Raw display coords
 typedef void (*SwipeCallback)(int direction);                      // -1=left, +1=right, -2=up, +2=down
 typedef void (*VolumeChangeCallback)(int volume);                  // 0-100
+typedef void (*MapDoubleTapCallback)(int portrait_x, int portrait_y); // Double-tap on map area
 
 void builtin_touch_init();
 void builtin_touch_task();
@@ -38,5 +39,6 @@ void builtin_touch_set_ui_state(UIState* state);  // For coordinate translation
 void builtin_touch_set_menu_callback(MenuTouchCallback cb);
 void builtin_touch_set_swipe_callback(SwipeCallback cb);
 void builtin_touch_set_volume_change_callback(VolumeChangeCallback cb);
+void builtin_touch_set_map_double_tap_callback(MapDoubleTapCallback cb);
 
 #endif // BUILTIN_TOUCH_H

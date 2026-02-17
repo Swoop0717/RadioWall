@@ -12,6 +12,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
+#include <WiFi.h>
 
 static const char* SETTINGS_FILE = "/settings.json";
 
@@ -22,8 +23,9 @@ static const int DEVICE_ROW_HEIGHT     = 60;
 static const int RESCAN_ROW_HEIGHT     = 60;
 static const int SETTINGS_AREA_BOTTOM  = 580;
 
-// Zoom row
+// Zoom and WiFi rows
 static const int ZOOM_ROW_HEIGHT = 40;
+static const int WIFI_ROW_HEIGHT = 40;
 
 // State
 static DiscoveredDevice _devices[MAX_DISCOVERED_DEVICES];
@@ -100,7 +102,7 @@ static bool load_from_file() {
     strncpy(_saved_name, doc["n"] | "", sizeof(_saved_name) - 1);
     _saved_name[sizeof(_saved_name) - 1] = '\0';
     _saved_zoom = doc["zoom"] | 1;
-    if (_saved_zoom < 1 || _saved_zoom > 3) _saved_zoom = 1;
+    if (_saved_zoom < 1 || _saved_zoom > 5) _saved_zoom = 1;
 
     // Load group IPs
     _group_count = 0;
@@ -336,8 +338,23 @@ void settings_render(Arduino_GFX* gfx) {
     gfx->setCursor(10, zoom_card_y + 16);
     gfx->printf("Zoom: %dx", _saved_zoom);
 
-    // Current device section (shifted down by zoom row)
-    int dev_section_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT;
+    // WiFi status row
+    int wifi_card_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + 2;
+    int wifi_card_h = WIFI_ROW_HEIGHT - 4;
+    bool wifi_connected = (WiFi.status() == WL_CONNECTED);
+    gfx->fillRoundRect(TH_CARD_MARGIN, wifi_card_y, TH_CARD_W, wifi_card_h,
+                        TH_CORNER_R, TH_CARD);
+    gfx->setTextSize(1);
+    gfx->setTextColor(wifi_connected ? TH_PLAYING : TH_DANGER);
+    gfx->setCursor(10, wifi_card_y + 16);
+    if (wifi_connected) {
+        gfx->printf("WiFi: %s", WiFi.localIP().toString().c_str());
+    } else {
+        gfx->print("WiFi: DISCONNECTED");
+    }
+
+    // Current device section (shifted down by zoom + wifi rows)
+    int dev_section_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + WIFI_ROW_HEIGHT;
     gfx->setTextSize(1);
     gfx->setTextColor(TH_TEXT_SEC);
     gfx->setCursor(5, dev_section_y + 5);
@@ -421,7 +438,7 @@ void settings_render(Arduino_GFX* gfx) {
 bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
     if (_scanning) return false;
 
-    int devices_start_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + CURRENT_SECTION_HEIGHT;
+    int devices_start_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + WIFI_ROW_HEIGHT + CURRENT_SECTION_HEIGHT;
     int rescan_y = SETTINGS_AREA_BOTTOM - RESCAN_ROW_HEIGHT;
 
     // Rescan button
@@ -547,23 +564,58 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
         }
     }
 
-    // Zoom row (between title and current device section)
+    // WiFi row
+    int wifi_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT;
+    if (y >= wifi_y && y < wifi_y + WIFI_ROW_HEIGHT) {
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[Settings] WiFi reconnect tapped");
+            // Visual feedback
+            if (gfx) {
+                int wifi_card_y = wifi_y + 2;
+                int wifi_card_h = WIFI_ROW_HEIGHT - 4;
+                gfx->fillRoundRect(TH_CARD_MARGIN, wifi_card_y, TH_CARD_W, wifi_card_h,
+                                    TH_CORNER_R, TH_CARD_HI);
+                gfx->setTextSize(1);
+                gfx->setTextColor(TH_WARNING);
+                gfx->setCursor(10, wifi_card_y + 16);
+                gfx->print("Reconnecting...");
+            }
+            WiFi.reconnect();
+            // Wait up to 5 seconds
+            int attempts = 0;
+            while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+                delay(500);
+                attempts++;
+            }
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.printf("[WiFi] Reconnected: %s\n", WiFi.localIP().toString().c_str());
+            } else {
+                Serial.println("[WiFi] Reconnect failed");
+            }
+            settings_render(gfx);
+        }
+        return true;
+    }
+
+    // Zoom row (between title and wifi row)
     int zoom_y = TITLE_HEIGHT;
     if (y >= zoom_y && y < zoom_y + ZOOM_ROW_HEIGHT) {
-        // Cycle zoom: 1 -> 2 -> 3 -> 1
-        int new_zoom = (_saved_zoom % 3) + 1;
+        // Cycle zoom: 1 -> 2 -> 3 -> 4 -> 5 -> 1
+        int new_zoom = (_saved_zoom % 5) + 1;
 
-        // Validate zoom files exist before allowing 2x/3x
+        // Validate zoom files exist before allowing >1x
         if (new_zoom > 1) {
             char path[24];
             snprintf(path, sizeof(path), "/maps/zoom%d.bin", new_zoom);
             if (!LittleFS.exists(path)) {
                 Serial.printf("[Settings] Zoom %dx file missing: %s\n", new_zoom, path);
-                new_zoom = (new_zoom % 3) + 1;
-                if (new_zoom > 1) {
-                    snprintf(path, sizeof(path), "/maps/zoom%d.bin", new_zoom);
-                    if (!LittleFS.exists(path)) new_zoom = 1;
+                // Try remaining levels, then fall back to 1
+                bool found = false;
+                for (int try_z = new_zoom + 1; try_z <= 5; try_z++) {
+                    snprintf(path, sizeof(path), "/maps/zoom%d.bin", try_z);
+                    if (LittleFS.exists(path)) { new_zoom = try_z; found = true; break; }
                 }
+                if (!found) new_zoom = 1;
             }
         }
 
@@ -600,8 +652,15 @@ int settings_get_zoom() {
 
 void settings_set_zoom(int level, Arduino_GFX* gfx) {
     if (level < 1) level = 1;
-    if (level > 3) level = 3;
+    if (level > 5) level = 5;
     _saved_zoom = level;
     save_to_file();
     if (gfx) settings_render(gfx);
+}
+
+void settings_set_zoom_no_render(int level) {
+    if (level < 1) level = 1;
+    if (level > 5) level = 5;
+    _saved_zoom = level;
+    save_to_file();
 }

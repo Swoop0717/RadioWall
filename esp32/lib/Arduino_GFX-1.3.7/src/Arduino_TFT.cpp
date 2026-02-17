@@ -66,71 +66,61 @@ void Arduino_TFT::writeRepeat(uint16_t color, uint32_t len)
 
 void Arduino_TFT::writeFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color)
 {
-    //   if (_ordered_in_range(x, 0, _max_x) && h)
-    //   { // X on screen, nonzero height
-    //     if (h < 0)
-    //     {             // If negative height...
-    //       y += h + 1; //   Move Y to top edge
-    //       h = -h;     //   Use positive height
-    //     }
-    //     if (y <= _max_y)
-    //     { // Not off bottom
-    //       int16_t y2 = y + h - 1;
-    //       if (y2 >= 0)
-    //       { // Not off top
-    //         // Line partly or fully overlaps screen
-    //         if (y < 0)
-    //         {
-    //           y = 0;
-    //           h = y2 + 1;
-    //         } // Clip top
-    //         if (y2 > _max_y)
-    //         {
-    //           h = _max_y - y + 1;
-    //         } // Clip bottom
-    //         writeFillRectPreclipped(x, y, 1, h, color);
-    //       }
-    //     }
-    //   }
-
-    for (int16_t i = y; i < y + h; i++)
-    {
-        writePixel(x, i, color);
+    if (_ordered_in_range(x, 0, _max_x) && h)
+    { // X on screen, nonzero height
+        if (h < 0)
+        {             // If negative height...
+            y += h + 1; //   Move Y to top edge
+            h = -h;     //   Use positive height
+        }
+        if (y <= _max_y)
+        { // Not off bottom
+            int16_t y2 = y + h - 1;
+            if (y2 >= 0)
+            { // Not off top
+                // Line partly or fully overlaps screen
+                if (y < 0)
+                {
+                    y = 0;
+                    h = y2 + 1;
+                } // Clip top
+                if (y2 > _max_y)
+                {
+                    h = _max_y - y + 1;
+                } // Clip bottom
+                writeFillRectPreclipped(x, y, 1, h, color);
+            }
+        }
     }
 }
 
 void Arduino_TFT::writeFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color)
 {
-    // if (_ordered_in_range(y, 0, _max_y) && w)
-    // { // Y on screen, nonzero width
-    //     if (w < 0)
-    //     {               // If negative width...
-    //         x += w + 1; //   Move X to left edge
-    //         w = -w;     //   Use positive width
-    //     }
-    //     if (x <= _max_x)
-    //     { // Not off right
-    //         int16_t x2 = x + w - 1;
-    //         if (x2 >= 0)
-    //         { // Not off left
-    //             // Line partly or fully overlaps screen
-    //             if (x < 0)
-    //             {
-    //                 x = 0;
-    //                 w = x2 + 1;
-    //             } // Clip left
-    //             if (x2 > _max_x)
-    //             {
-    //                 w = _max_x - x + 1;
-    //             } // Clip right
-    //             writeFillRectPreclipped(x, y, w, 1, color);
-    //         }
-    //     }
-    // }
-
-    for (int16_t i = x; i < x + w; i++)
-    {
-        writePixel(i, y, color);
+    if (_ordered_in_range(y, 0, _max_y) && w)
+    { // Y on screen, nonzero width
+        if (w < 0)
+        {               // If negative width...
+            x += w + 1; //   Move X to left edge
+            w = -w;     //   Use positive width
+        }
+        if (x <= _max_x)
+        { // Not off right
+            int16_t x2 = x + w - 1;
+            if (x2 >= 0)
+            { // Not off left
+                // Line partly or fully overlaps screen
+                if (x < 0)
+                {
+                    x = 0;
+                    w = x2 + 1;
+                } // Clip left
+                if (x2 > _max_x)
+                {
+                    w = _max_x - x + 1;
+                } // Clip right
+                writeFillRectPreclipped(x, y, w, 1, color);
+            }
+        }
     }
 }
 

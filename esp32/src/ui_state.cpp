@@ -248,11 +248,44 @@ void UIState::set_slice_index(int idx) {
 
 void UIState::set_zoom_level(int level) {
     if (level < 1) level = 1;
-    if (level > 3) level = 3;
+    if (level > 5) level = 5;
     _zoom_level = level;
     _zoom_col = 0;
     _zoom_row = 0;
     Serial.printf("[UIState] Zoom: %dx\n", _zoom_level);
+}
+
+void UIState::set_zoom_centered(int new_level, float lat, float lon) {
+    if (new_level < 1) new_level = 1;
+    if (new_level > 5) new_level = 5;
+
+    // Pick the slice containing this longitude
+    current_slice_index = slice_index_for_lon(lon);
+
+    if (new_level == 1) {
+        _zoom_level = 1;
+        _zoom_col = 0;
+        _zoom_row = 0;
+        Serial.printf("[UIState] Zoom 1x, slice=%d\n", current_slice_index);
+        return;
+    }
+
+    _zoom_level = new_level;
+
+    // Find column: where does lon fall within the slice's longitude range?
+    const MapSlice& s = slices[current_slice_index];
+    float range = s.lon_max - s.lon_min;
+    if (range < 0) range += 360.0f;  // Pacific wrapping
+    float lon_offset = lon - s.lon_min;
+    if (lon_offset < 0) lon_offset += 360.0f;
+    _zoom_col = constrain((int)(lon_offset / range * new_level), 0, new_level - 1);
+
+    // Find row: lat mapped to rows (90° at top, -90° at bottom)
+    float norm_lat = (90.0f - lat) / 180.0f;  // 0.0 = north pole, 1.0 = south pole
+    _zoom_row = constrain((int)(norm_lat * new_level), 0, new_level - 1);
+
+    Serial.printf("[UIState] Zoom %dx centered on (%.1f, %.1f) -> slice=%d col=%d row=%d\n",
+                  _zoom_level, lat, lon, current_slice_index, _zoom_col, _zoom_row);
 }
 
 int UIState::get_zoom_level() const { return _zoom_level; }

@@ -217,6 +217,7 @@ static bool fetch_and_play_place(const Place* place) {
     }
 
     if (_total_stations == 0) {
+        Serial.println("[Radio] 0 stations found for this place");
         return false;
     }
     Serial.printf("[Radio] %d stations available\n", _total_stations);

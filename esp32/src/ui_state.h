@@ -46,7 +46,7 @@ private:
     int _sleep_timer_minutes;  // 0 = off
     float _marker_lat, _marker_lon;
     bool _has_marker;
-    int _zoom_level;   // 1, 2, or 3
+    int _zoom_level;   // 1..5
     int _zoom_col;     // 0..(zoom-1), column within zoom grid
     int _zoom_row;     // 0..(zoom-1), row within zoom grid
 
@@ -105,6 +105,7 @@ public:
 
     // Zoom
     void set_zoom_level(int level);
+    void set_zoom_centered(int new_level, float lat, float lon);
     int get_zoom_level() const;
     int get_zoom_col() const;
     int get_zoom_row() const;

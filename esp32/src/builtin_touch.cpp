@@ -52,6 +52,14 @@ static uint16_t _touch_current_x, _touch_current_y;
 static unsigned long _touch_start_ms = 0;
 static TouchZone _touch_start_zone = ZONE_MAP;
 
+// Double-tap detection for map area (deferred single tap)
+static MapDoubleTapCallback _map_double_tap_callback = nullptr;
+static bool _pending_tap = false;
+static uint16_t _pending_tap_x = 0;
+static uint16_t _pending_tap_y = 0;
+static unsigned long _pending_tap_time = 0;
+static const unsigned long DOUBLE_TAP_WINDOW_MS = 500;
+
 // I2C bus (using Arduino_DriveBus library like working example)
 static std::shared_ptr<Arduino_IIC_DriveBus> IIC_Bus = nullptr;
 
@@ -136,6 +144,10 @@ void builtin_touch_set_volume_change_callback(VolumeChangeCallback cb) {
     _volume_change_callback = cb;
 }
 
+void builtin_touch_set_map_double_tap_callback(MapDoubleTapCallback cb) {
+    _map_double_tap_callback = cb;
+}
+
 // ------------------------------------------------------------------
 // Gesture helper: fire map tap at given portrait coordinates
 // ------------------------------------------------------------------
@@ -185,6 +197,7 @@ static void handle_map_gesture(unsigned long now) {
 
     if (abs(dx) > 30 && abs(dx) > abs(dy) && duration < 800) {
         // Horizontal swipe: +1 = right, -1 = left
+        _pending_tap = false;  // Cancel any pending tap
         int direction = (dx > 0) ? 1 : -1;
         Serial.printf("[Touch] Swipe %s (dx=%d, duration=%lums)\n",
                      direction > 0 ? "right" : "left", dx, duration);
@@ -193,6 +206,7 @@ static void handle_map_gesture(unsigned long now) {
         }
     } else if (abs(dy) > 30 && abs(dy) > abs(dx) && duration < 800) {
         // Vertical swipe: +2 = down, -2 = up
+        _pending_tap = false;  // Cancel any pending tap
         int direction = (dy > 0) ? 2 : -2;
         Serial.printf("[Touch] Swipe %s (dy=%d, duration=%lums)\n",
                      direction > 0 ? "down" : "up", dy, duration);
@@ -201,7 +215,44 @@ static void handle_map_gesture(unsigned long now) {
         }
     } else if (abs(dx) < 15 && abs(dy) < 15) {
         // Small movement = tap
-        fire_map_tap(_touch_start_x, _touch_start_y);
+        if (_pending_tap && (now - _pending_tap_time < DOUBLE_TAP_WINDOW_MS)) {
+            // Second tap arrived as a clean separate gesture → double-tap
+            _pending_tap = false;
+            Serial.printf("[Touch] Double-tap (on UP) at (%d, %d)\n",
+                         _touch_start_x, _touch_start_y);
+            if (_map_double_tap_callback) {
+                _map_double_tap_callback(_touch_start_x, _touch_start_y);
+            }
+            // Flush touch controller after blocking callback (INT pin fix)
+            uint8_t flush_buf[8] = {0};
+            IIC_Bus->IIC_ReadCData_Data(TOUCH_I2C_ADDR,
+                read_touchpad_cmd, sizeof(read_touchpad_cmd),
+                flush_buf, sizeof(flush_buf));
+            _touch_interrupt = false;
+        } else {
+            // First tap → defer, wait for possible second tap
+            _pending_tap = true;
+            _pending_tap_x = _touch_start_x;
+            _pending_tap_y = _touch_start_y;
+            _pending_tap_time = now;
+            Serial.printf("[Touch] Tap pending at (%d, %d) - waiting for double-tap\n",
+                         _touch_start_x, _touch_start_y);
+        }
+    } else if (_pending_tap && (now - _pending_tap_time < DOUBLE_TAP_WINDOW_MS)) {
+        // Merged double-tap: fast taps merged into one gesture because the
+        // brief finger-off gap between taps was missed by the controller.
+        // Movement is >15px (not a clean tap) but <30px (not a swipe).
+        _pending_tap = false;
+        Serial.printf("[Touch] Double-tap (merged) at (%d, %d)\n",
+                     _touch_current_x, _touch_current_y);
+        if (_map_double_tap_callback) {
+            _map_double_tap_callback(_touch_current_x, _touch_current_y);
+        }
+        uint8_t flush_buf[8] = {0};
+        IIC_Bus->IIC_ReadCData_Data(TOUCH_I2C_ADDR,
+            read_touchpad_cmd, sizeof(read_touchpad_cmd),
+            flush_buf, sizeof(flush_buf));
+        _touch_interrupt = false;
     }
     // else: ambiguous gesture, ignore
 }
@@ -210,6 +261,34 @@ static void handle_map_gesture(unsigned long now) {
 // Gesture helper: handle finger DOWN
 // ------------------------------------------------------------------
 static void handle_touch_down(uint16_t x, uint16_t y, unsigned long now) {
+    const int MAP_AREA_HEIGHT = 580;
+
+    // Check for double-tap BEFORE starting the new gesture.
+    // Detect on second DOWN (not UP) so it fires before any blocking callback.
+    if (_pending_tap && (now - _pending_tap_time < DOUBLE_TAP_WINDOW_MS)) {
+        // Only if this DOWN is also in the map zone
+        bool in_map_zone = (y < MAP_AREA_HEIGHT) && _ui_state &&
+                           (_ui_state->get_view_mode() == VIEW_MAP);
+        if (in_map_zone) {
+            _pending_tap = false;
+            _gesture_active = false;
+            Serial.printf("[Touch] Double-tap at (%d, %d)\n", x, y);
+            if (_map_double_tap_callback) {
+                _map_double_tap_callback(x, y);
+            }
+            // The callback likely blocked for seconds (map redraw).
+            // The touch controller may have fired events (UP) during the block
+            // that we never read, leaving the INT pin stuck LOW permanently.
+            // Flush with a dummy read to release INT and restore interrupts.
+            uint8_t flush_buf[8] = {0};
+            IIC_Bus->IIC_ReadCData_Data(TOUCH_I2C_ADDR,
+                read_touchpad_cmd, sizeof(read_touchpad_cmd),
+                flush_buf, sizeof(flush_buf));
+            _touch_interrupt = false;
+            return;  // Don't start a new gesture
+        }
+    }
+
     _gesture_active = true;
     _touch_start_x = x;
     _touch_start_y = y;
@@ -217,14 +296,12 @@ static void handle_touch_down(uint16_t x, uint16_t y, unsigned long now) {
     _touch_current_y = y;
     _touch_start_ms = now;
 
-    const int MAP_AREA_HEIGHT = 580;
-
     // Determine zone based on position and current view
     if (y >= MAP_AREA_HEIGHT) {
         _touch_start_zone = ZONE_STATUS_BAR;
     } else if (_ui_state) {
         ViewMode mode = _ui_state->get_view_mode();
-        if (mode == VIEW_MENU || mode == VIEW_FAVORITES || mode == VIEW_SETTINGS) _touch_start_zone = ZONE_MENU;
+        if (mode == VIEW_MENU || mode == VIEW_FAVORITES || mode == VIEW_SETTINGS || mode == VIEW_HISTORY) _touch_start_zone = ZONE_MENU;
         else if (mode == VIEW_VOLUME) _touch_start_zone = ZONE_VOLUME;
         else _touch_start_zone = ZONE_MAP;
     } else {
@@ -296,6 +373,14 @@ void builtin_touch_task() {
 
     unsigned long now = millis();
 
+    // Deferred tap timeout: fire single tap if no second tap arrived
+    if (_pending_tap && (now - _pending_tap_time >= DOUBLE_TAP_WINDOW_MS)) {
+        _pending_tap = false;
+        Serial.printf("[Touch] Deferred tap fired at (%d, %d)\n",
+                     _pending_tap_x, _pending_tap_y);
+        fire_map_tap(_pending_tap_x, _pending_tap_y);
+    }
+
     // Timeout: if gesture active but no touch data for 200ms, treat as UP
     if (_gesture_active && (now - _last_touch_ms > 200)) {
         handle_touch_up(now);
@@ -324,13 +409,13 @@ void builtin_touch_task() {
         return;
     }
 
-    // Clear interrupt flag
-    _touch_interrupt = false;
-
-    // Debounce
+    // Debounce: don't clear _touch_interrupt yet — if debounce blocks the
+    // read, the flag stays set so we retry on the next iteration instead of
+    // silently dropping the event.
     if (now - _last_touch_ms < 20) {
         return;
     }
+    _touch_interrupt = false;
     _last_touch_ms = now;
 
     // Read touch data using Arduino_DriveBus

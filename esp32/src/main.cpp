@@ -143,6 +143,47 @@ static void on_map_touch(int server_x, int server_y) {
 }
 
 // ------------------------------------------------------------------
+// Double-tap zoom callback
+// ------------------------------------------------------------------
+
+static void on_map_double_tap(int portrait_x, int portrait_y) {
+    display_wake();
+
+    const int MAP_AREA_HEIGHT = 580;
+    const int MAP_W = 180;
+
+    // Convert portrait coords to lat/lon (same math as fire_map_tap)
+    float norm_x = portrait_x / (float)(MAP_W - 1);
+    float norm_y = portrait_y / (float)(MAP_AREA_HEIGHT - 1);
+
+    float lon_min = ui_state.get_view_lon_min();
+    float lon_max = ui_state.get_view_lon_max();
+    float lat_max = ui_state.get_view_lat_max();
+    float lat_min = ui_state.get_view_lat_min();
+
+    float lon_range = lon_max - lon_min;
+    if (lon_range < 0) lon_range += 360.0f;
+
+    float lon = lon_min + norm_x * lon_range;
+    float lat = lat_max - norm_y * (lat_max - lat_min);
+
+    if (lon > 180.0f) lon -= 360.0f;
+    if (lon < -180.0f) lon += 360.0f;
+
+    // Cycle zoom: 1 -> 2 -> 3 -> 4 -> 5 -> 1
+    int current_zoom = ui_state.get_zoom_level();
+    int new_zoom = (current_zoom >= 5) ? 1 : current_zoom + 1;
+
+    Serial.printf("[Main] Double-tap zoom: %dx -> %dx at (%.1f, %.1f)\n",
+                  current_zoom, new_zoom, lat, lon);
+
+    ui_state.set_zoom_centered(new_zoom, lat, lon);
+    settings_set_zoom_no_render(new_zoom);
+
+    display_show_map_view(&ui_state);
+}
+
+// ------------------------------------------------------------------
 // Favorites callbacks
 // ------------------------------------------------------------------
 
@@ -613,23 +654,16 @@ void setup() {
         Serial.println("[Main] WARNING: No places.bin - run 'pio run -t uploadfs'");
     }
 
-    // Connect to WiFi
+    // Connect to WiFi (retry until connected — no WiFi = no radio)
     display_show_connecting();
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
 
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
-        attempts++;
     }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n[WiFi] Connected: %s\n", WiFi.localIP().toString().c_str());
-    } else {
-        Serial.println("\n[WiFi] Connection failed!");
-    }
+    Serial.printf("\n[WiFi] Connected: %s\n", WiFi.localIP().toString().c_str());
 
     // Initialize mDNS (for device discovery)
     if (MDNS.begin("radiowall")) {
@@ -694,6 +728,7 @@ void setup() {
         builtin_touch_set_menu_callback(on_menu_touch);
         builtin_touch_set_swipe_callback(on_swipe);
         builtin_touch_set_volume_change_callback(on_volume_change);
+        builtin_touch_set_map_double_tap_callback(on_map_double_tap);
         builtin_touch_set_ui_state(&ui_state);
     #endif
 

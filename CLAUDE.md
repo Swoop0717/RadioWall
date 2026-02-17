@@ -54,11 +54,11 @@ RadioWall is an interactive physical world map that plays local radio stations w
 | LinkPlay Client | ✅ WiiM control via HTTPS (port 443) |
 | Physical Button | ✅ Multi-action: short/long/double-tap |
 | Touch Buttons | ✅ STOP and NEXT in status bar |
-| Map Rendering | ✅ Optimized with drawFastHLine, zoomable (1x/2x/3x) |
+| Map Rendering | ✅ Optimized drawFastHLine (library fix), zoomable (1x–5x), double-tap zoom |
 | UI Theme | ✅ Custom fonts (FreeSansBold), rounded cards, icons |
 | Favorites | ✅ LittleFS persistence, paginated list, play/delete |
 | History | ✅ Auto-records last 20 stations, deduplication |
-| Settings | ✅ mDNS device discovery, multiroom grouping, zoom level |
+| Settings | ✅ mDNS device discovery, multiroom, zoom (1-5x), WiFi reconnect |
 | End-to-End Flow | ✅ Touch → Places → Radio.garden → WiiM |
 | Server (Docker) | ⏸️ Not needed (standalone mode) |
 | USB Touch Panel | 🔧 Skeleton, waiting for OTG adapter |
@@ -68,6 +68,7 @@ RadioWall is an interactive physical world map that plays local radio stations w
 | Input | Action |
 |-------|--------|
 | Touch map | Play radio from nearest city (X marker at city) |
+| Double-tap map | Zoom in one level (1x→2x→3x→4x→5x→1x), centered on tap |
 | Touch STOP button | Stop playback |
 | Touch NEXT button | Next station; hops to next city when exhausted |
 | Swipe left/right | Cycle map region |
@@ -79,7 +80,7 @@ RadioWall is an interactive physical world map that plays local radio stations w
 | Menu → Sleep Timer | Cycle: Off/15/30/60/90 min |
 | Menu → Favorites | View/play/delete saved stations |
 | Menu → History | View/replay last 20 stations played |
-| Menu → Settings | WiiM device discovery, zoom level, multiroom |
+| Menu → Settings | WiiM device discovery, zoom level, multiroom, WiFi reconnect |
 | Favorites → ADD | Save currently playing station |
 | History → CLEAR | Wipe all playback history |
 
@@ -295,7 +296,7 @@ pip install -r requirements.txt
 python generate_map_bitmaps.py
 ```
 
-Downloads Natural Earth 1:110m coastline data, renders 180×580 bitmaps, RLE compresses to `esp32/src/world_map_data.h` (~22KB total).
+Downloads Natural Earth 1:110m coastline data, renders 180×580 bitmaps, RLE compresses to `esp32/src/world_map_data.h` (~22KB total). Also generates zoom 2x–5x tile data in `esp32/data/maps/zoom{2,3,4,5}.bin` for LittleFS.
 
 ---
 
@@ -718,28 +719,23 @@ To send commands via serial monitor:
 
 ```ini
 ; platformio.ini
-monitor_filters = esp32_exception_decoder, send_on_enter
+monitor_filters = esp32_exception_decoder, send_on_enter, time
 monitor_echo = yes
 ```
 
 - `send_on_enter`: Press Enter to send the line
 - `monitor_echo`: See what you're typing
+- `time`: Wall-clock timestamps on each log line
 
 ### Map Rendering Optimization
 
-Map rendering uses `drawFastHLine()` instead of `drawPixel()` for better performance:
+Map rendering uses `drawFastHLine()` to draw RLE-compressed horizontal segments.
 
-```cpp
-// OLD - slow (~10+ seconds)
-gfx->drawPixel(x, y, color);
+**Arduino_GFX v1.3.7 library fix**: `writeFastHLine()` and `writeFastVLine()` in `Arduino_TFT.cpp` had optimized code **commented out**, falling back to per-pixel `writePixel()` calls. We uncommented the `writeFillRectPreclipped()` path, which uses one `writeAddrWindow` + one `writeRepeat` per line instead of N individual pixel writes.
 
-// NEW - faster (~4 seconds)
-gfx->drawFastHLine(x, y, width, color);
-```
+**Result**: Map draw time dropped from ~5 seconds to ~150ms.
 
-The RLE-compressed map data is decoded into horizontal line segments, reducing SPI transactions from ~90,000 to ~10,000.
-
-**Note:** For truly instant rendering (<100ms), would need PSRAM framebuffer (~209KB for 180×580×16bit). Current performance is acceptable for region changes.
+**Note**: A single-window `writeRepeat` streaming approach (one `writeAddrWindow` for the full 180×580 map) was attempted but produced rendering artifacts (horizontal bars). The QSPI bus's `writeRepeat` doesn't reliably continue within an address window across multiple calls. The per-line `drawFastHLine` approach with the library fix is fast enough.
 
 ### Station Count & Next-City Hopping
 
@@ -821,38 +817,15 @@ Implemented in `settings.cpp/h`. Uses ESPmDNS to query `_linkplay._tcp` service.
 - Menu → Sleep Timer cycles through presets: Off/15/30/60/90 min
 - Uses LinkPlay `setSleepTimer:<seconds>` API
 
-### Planned Features
-
-#### 21. Double-Tap Zoom with 5 Levels
-
-Zoom into the map by double-tapping on the map area. Adds zoom levels 4x and 5x for finer geographic detail.
-
-- **Gesture**: Double-tap on map area → zoom in one level, centered on tap location
-- **Zoom cycle**: 1x → 2x → 3x → 4x → 5x → (next double-tap) → back to 1x
-- **Single tap**: Always plays radio (with ~300ms delay to distinguish from double-tap)
-- **Swipes**: Always navigate between slices/tiles (unchanged)
-- **Current zoom via Settings**: Still available as fallback
-
-**Implementation areas:**
-| Area | Work needed |
-|------|-------------|
-| `builtin_touch.cpp` | Double-tap detection on map area (~300ms window, proximity check) |
-| `generate_map_bitmaps.py` | Generate zoom 4x and 5x tile data; may need Natural Earth 1:10m for detail |
-| `world_map.cpp/h` | Handle zoom 4x/5x tile loading and rendering |
-| `ui_state.cpp/h` | Track current zoom level, center-on-tap logic |
-| `settings.cpp` | Update zoom level options (1-5 instead of 1-3) |
-| LittleFS | New map files: `/maps/zoom4.bin`, `/maps/zoom5.bin` |
-
-**Considerations:**
-- Storage: zoom4/zoom5 bins need to fit in LittleFS alongside places.bin (~634KB) and existing zoom files (~215KB)
-- Map quality: Higher zooms may need 1:10m Natural Earth data instead of 1:50m to avoid blocky coastlines
-- Touch delay: Single tap gets ~300ms slower due to double-tap disambiguation
-
-### Completed Planned Features (Medium-term)
+### Completed Planned Features
 
 #### ~~16. Closeup Regional Maps~~ ✅ IMPLEMENTED
 
-Implemented as zoomable maps (1x/2x/3x) in `world_map.cpp` and `generate_map_bitmaps.py`. Each zoom level subdivides slices into tiles with country borders (Natural Earth 1:50m). Zoom level configurable in Settings screen. Map files stored in LittleFS `/maps/zoom2.bin` and `/maps/zoom3.bin`.
+Implemented as zoomable maps (1x–5x) in `world_map.cpp` and `generate_map_bitmaps.py`. Each zoom level subdivides slices into tiles with country borders (Natural Earth 1:50m). Zoom level configurable in Settings screen or via double-tap. Map files stored in LittleFS `/maps/zoom{2,3,4,5}.bin`.
+
+#### ~~21. Double-Tap Zoom with 5 Levels~~ ✅ IMPLEMENTED
+
+Implemented in `builtin_touch.cpp`, `ui_state.cpp`, `main.cpp`, `settings.cpp`. Double-tap on the map area cycles zoom 1x→2x→3x→4x→5x→1x, centered on the second tap's position. Three detection paths handle the noisy AXS15231B touch controller (DOWN-based, UP-based, merged-gesture). Single taps are deferred ~500ms to distinguish from double-taps. Touch controller is flushed after zoom callbacks to prevent INT pin lockup.
 
 #### ~~17. Multiroom Support (LinkPlay)~~ ✅ IMPLEMENTED
 
@@ -957,33 +930,11 @@ Common commands for WiiM/LinkPlay devices:
 
 ### Feature Ratings
 
-#### 🟢 Easy Features
-
-| # | Feature | Lines | Why Easy |
-|---|---------|-------|----------|
-| 4 | Volume Control | ~20 | LinkPlay `setPlayerCmd:vol` already works. Add serial cmd + UI. |
-| 5 | Pause/Resume | ~15 | Same as stop pattern. API: `setPlayerCmd:pause/resume`. |
-| 10 | Station Count Display | ~10 | Data exists (`_current_station_index`). Update status bar to show "(2/5)". |
-| 13 | Sleep Timer | ~20 | LinkPlay `setSleepTimer:<seconds>`. Simple wrapper. |
-
-#### 🟡 Medium Features
-
-| # | Feature | Lines | Notes |
-|---|---------|-------|-------|
-| 1 | Favorite Stations | ~150 | LittleFS + ArduinoJson pattern. New `favorites.cpp`, JSON read/write, gesture detection. |
-| 2 | Playback History | ~100 | In-memory ring buffer. Optional LittleFS persistence. Similar to station cache. |
-| 7 | WiiM Auto-Discovery | ~100 | [ESPmDNS](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/protocols/mdns.html) built-in. [ESP32SSDP](https://github.com/luc-github/ESP32SSDP) available. Query `_linkplay._tcp`. |
-| 9 | Dynamic Search | ~80 | Modify `places_db_find_nearest()` to return top 10 cities. Cycle cities when stations exhausted. |
-| 11 | Display Layout Overhaul | ~100 | Reduce map height, text truncation with `...`, show station count. Refactor `display.cpp`. |
-
 #### 🟠 Moderate-Hard Features
 
 | # | Feature | Lines | Notes |
 |---|---------|-------|-------|
 | 6 | Debug Log Display | ~200 | Ring buffer for Serial, redirect output, triple-tap toggle, overlay rendering. |
-| 16 | Closeup Regional Maps | ~300 | New high-res bitmaps, zoom gestures, pan navigation. Python tooling updates. |
-| 17 | Multiroom Support | ~250 | [LinkPlay multiroom API](https://developer.arylic.com/httpapi/) documented. Device discovery + selection UI. |
-| 21 | Double-Tap Zoom (5 levels) | ~300 | Double-tap detection, zoom 4x/5x map generation, center-on-tap logic, 1:10m map data for detail. |
 
 #### 🔴 Hard Features
 
@@ -992,23 +943,8 @@ Common commands for WiiM/LinkPlay devices:
 | 18 | UPnP/DLNA Streaming | ~500+ | No ESP32 library for *controlling* DLNA renderers. [SoapESP32](https://github.com/yellobyte/SoapESP32) only browses servers. Must implement SOAP/XML control protocol from scratch. |
 | 19 | Bluetooth A2DP Output | ~1000+ | [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) exists but ESP32 must decode audio streams (MP3/AAC). Need decoder library, significant memory, architecture change. Current design sends URLs to WiiM; BT requires ESP32 to fetch+decode+stream. |
 
-### Implementation Priority Recommendations
+### Notes
 
-**Consider dropping or deferring:**
-- UPnP/DLNA (#18) - LinkPlay works well, not worth the protocol complexity
-- Bluetooth A2DP (#19) - fundamentally different architecture, would be a separate project
-
-### Key Infrastructure Notes
-
-**What already exists (reusable):**
-- LinkPlay client with HTTPS, URL encoding, retry logic (`linkplay_client.cpp`)
-- LittleFS with 4MB partition (only 634KB used for places.bin)
-- ArduinoJson for parsing (16KB DynamicJsonDocument)
-- Serial command infrastructure with `peek()` pattern
-- Station caching with index cycling
-- PSRAM support for large allocations
-
-**Libraries to add for specific features:**
-- mDNS: Built-in `ESPmDNS.h` (no install needed)
-- SSDP: [ESP32SSDP](https://github.com/luc-github/ESP32SSDP) via PlatformIO
-- Bluetooth: [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) (if pursuing #19)
+- All easy/medium features (#1-#17, #21) are now implemented
+- UPnP/DLNA (#18) and Bluetooth A2DP (#19) are deferred — LinkPlay works well
+- Debug Log Display (#6) is the only remaining non-long-term feature

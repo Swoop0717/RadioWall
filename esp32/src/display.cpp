@@ -241,7 +241,8 @@ static void draw_current_map(UIState* state) {
             draw_map_slice(gfx, slice.bitmap, slice.bitmap_size, 0, 0);
         }
     } else {
-        const char* path = (zoom == 2) ? "/maps/zoom2.bin" : "/maps/zoom3.bin";
+        char path[24];
+        snprintf(path, sizeof(path), "/maps/zoom%d.bin", zoom);
         if (!draw_map_from_file(gfx, path, zoom,
                                 state->get_current_slice_index(),
                                 state->get_zoom_col(),
