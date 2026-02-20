@@ -42,6 +42,29 @@ static char _location[128] = "";
 static char _country[8] = "";
 static char _status[32] = "idle";
 
+// Helper: truncate UTF-8 string to max N bytes with "..." without splitting multi-byte chars
+static void utf8_truncate(char* buf, size_t max_bytes) {
+    if (strlen(buf) <= max_bytes) return;
+    int i = max_bytes - 3;
+    while (i > 0 && (buf[i] & 0xC0) == 0x80) i--; // back up past continuation bytes
+    buf[i++] = '.';
+    buf[i++] = '.';
+    buf[i++] = '.';
+    buf[i] = '\0';
+}
+
+// Helper: set u8g2 Unicode font for status bar text
+static void set_unicode_font() {
+    gfx->setFont(u8g2_font_cubic11_h_cjk);
+    gfx->setUTF8Print(true);
+}
+
+// Helper: clear u8g2 font (back to default)
+static void clear_unicode_font() {
+    gfx->setFont((const uint8_t*)nullptr);
+    gfx->setUTF8Print(false);
+}
+
 // Helper: draw a rounded button in the status bar
 static void draw_status_button(int x, int y, int w, int h, uint16_t text_color, const char* label) {
     gfx->fillRoundRect(x, y, w, h, TH_CORNER_R, TH_BTN);
@@ -52,7 +75,7 @@ static void draw_status_button(int x, int y, int w, int h, uint16_t text_color, 
     int text_x = x + (w - strlen(label) * 10) / 2;
     gfx->setCursor(text_x, y + h / 2 + 5);
     gfx->print(label);
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 }
 
 void display_init() {
@@ -91,7 +114,7 @@ void display_init() {
     gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(200, 80);
     gfx->print("RadioWall");
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 
     gfx->setCursor(120, 100);
     gfx->setTextSize(1);
@@ -135,7 +158,7 @@ void display_show_nowplaying(const char* station, const char* location, const ch
         gfx->setTextColor(TH_ACCENT);
         gfx->setCursor(10, 50);
         gfx->print("NOW PLAYING:");
-        gfx->setFont(NULL);
+        gfx->setFont((const GFXfont*)nullptr);
 
         // Station name
         gfx->setCursor(10, 80);
@@ -185,7 +208,7 @@ void display_show_connecting() {
         gfx->setTextColor(TH_WARNING);
         gfx->setCursor(180, 90);
         gfx->print("Connecting...");
-        gfx->setFont(NULL);
+        gfx->setFont((const GFXfont*)nullptr);
     }
 }
 
@@ -295,38 +318,35 @@ void display_update_status_bar(UIState* state) {
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, STATUS_H, TH_BG);
 
     gfx->setTextSize(1);
+    set_unicode_font();
 
     // Line 1: City, CC (idx/total) when playing, else region name
+    // u8g2 font uses baseline coords: y=STATUS_Y+13 gives ~ascent(8)+5px padding
     const char* status_text = state->get_status_text();
     if (status_text[0] != '\0') {
         gfx->setTextColor(MAGENTA);
-        gfx->setCursor(5, STATUS_Y + 5);
+        gfx->setCursor(4, STATUS_Y + 13);
         gfx->print(status_text);
     } else if (state->get_is_playing()) {
         // Show: "City, CC (2/5)"
         const StationInfo* station = radio_get_current();
         int idx = radio_get_station_index();
         int total = radio_get_total_stations();
-        char line1[32];
+        char line1[48];
         if (station && total > 0) {
             snprintf(line1, sizeof(line1), "%s, %s (%d/%d)",
                      station->place, station->country, idx, total);
         } else {
             snprintf(line1, sizeof(line1), "%s", state->get_location());
         }
-        if (strlen(line1) > 28) {
-            line1[25] = '.';
-            line1[26] = '.';
-            line1[27] = '.';
-            line1[28] = '\0';
-        }
+        utf8_truncate(line1, 26);
         gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(5, STATUS_Y + 5);
+        gfx->setCursor(4, STATUS_Y + 13);
         gfx->print(line1);
     } else {
         MapSlice& slice = state->get_current_slice();
         gfx->setTextColor(TH_ACCENT);
-        gfx->setCursor(5, STATUS_Y + 5);
+        gfx->setCursor(4, STATUS_Y + 13);
         int zoom = state->get_zoom_level();
         if (zoom > 1) {
             char zoom_label[28];
@@ -349,21 +369,24 @@ void display_update_status_bar(UIState* state) {
 
     // Line 2: Station name or idle text
     if (state->get_is_playing() && status_text[0] == '\0') {
-        char line2[29];
-        strncpy(line2, state->get_station_name(), 28);
-        line2[28] = '\0';
+        char line2[48];
+        strncpy(line2, state->get_station_name(), 47);
+        line2[47] = '\0';
+        utf8_truncate(line2, 26);
         gfx->setTextColor(TH_TEXT);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(line2);
     } else if (!state->get_is_playing() && status_text[0] == '\0') {
         gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print("Tap map to play");
     }
 
+    clear_unicode_font();
+
     // Line 3: STOP and NEXT buttons (90px each, rounded)
-    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_TEXT, "STOP");
-    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "NEXT");
+    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_TEXT, "STOP");
+    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_TEXT, "NEXT");
 }
 
 /**
@@ -408,29 +431,33 @@ void display_update_status_bar_menu(UIState* state) {
 
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, STATUS_H, TH_BG);
     gfx->setTextSize(1);
+    set_unicode_font();
 
     // Line 1: Context label
     gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->setCursor(4, STATUS_Y + 13);
     gfx->print("Menu");
 
     // Line 2: Station name
     if (state->get_is_playing()) {
-        char info[29];
-        strncpy(info, state->get_station_name(), 28);
-        info[28] = '\0';
+        char info[48];
+        strncpy(info, state->get_station_name(), 47);
+        info[47] = '\0';
+        utf8_truncate(info, 26);
         gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(info);
     } else {
         gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print("Not playing");
     }
 
+    clear_unicode_font();
+
     // Line 3: BACK (left) + STOP (right)
-    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "STOP");
+    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_TEXT, "STOP");
 }
 
 // ------------------------------------------------------------------
@@ -460,7 +487,7 @@ void display_show_volume_view(UIState* state) {
     gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(40, FONT_SANS_ASCENT + 10);
     gfx->print("Volume");
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 
     // Draw the slider
     display_update_volume_bar(state);
@@ -513,7 +540,7 @@ void display_update_volume_bar(UIState* state) {
         gfx->setCursor(44, 56);
     }
     gfx->printf("%d%%", vol);
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 }
 
 // ------------------------------------------------------------------
@@ -531,34 +558,38 @@ void display_show_favorites_view(UIState* state) {
     const int STATUS_Y = 580;
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
     gfx->setTextSize(1);
+    set_unicode_font();
 
     // Line 1: Context
     gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->setCursor(4, STATUS_Y + 13);
     gfx->print("Favorites");
 
     // Line 2: Status text or station name
     const char* status_text = state->get_status_text();
     if (status_text[0] != '\0') {
         gfx->setTextColor(MAGENTA);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(status_text);
     } else if (state->get_is_playing()) {
-        char info[29];
-        strncpy(info, state->get_station_name(), 28);
-        info[28] = '\0';
+        char info[48];
+        strncpy(info, state->get_station_name(), 47);
+        info[47] = '\0';
+        utf8_truncate(info, 26);
         gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(info);
     } else {
         gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print("Not playing");
     }
 
+    clear_unicode_font();
+
     // Line 3: BACK (left) + ADD (right)
-    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_PLAYING, "ADD");
+    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_PLAYING, "ADD");
 }
 
 // ------------------------------------------------------------------
@@ -576,34 +607,38 @@ void display_show_history_view(UIState* state) {
     const int STATUS_Y = 580;
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
     gfx->setTextSize(1);
+    set_unicode_font();
 
     // Line 1: Context
     gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->setCursor(4, STATUS_Y + 13);
     gfx->print("History");
 
     // Line 2: Status text or station name
     const char* status_text = state->get_status_text();
     if (status_text[0] != '\0') {
         gfx->setTextColor(MAGENTA);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(status_text);
     } else if (state->get_is_playing()) {
-        char info[29];
-        strncpy(info, state->get_station_name(), 28);
-        info[28] = '\0';
+        char info[48];
+        strncpy(info, state->get_station_name(), 47);
+        info[47] = '\0';
+        utf8_truncate(info, 26);
         gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(info);
     } else {
         gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print("Not playing");
     }
 
+    clear_unicode_font();
+
     // Line 3: BACK (left) + CLEAR (right)
-    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_DANGER, "CLEAR");
+    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_DANGER, "CLEAR");
 }
 
 // ------------------------------------------------------------------
@@ -627,34 +662,38 @@ void display_update_status_bar_settings(UIState* state) {
     const int STATUS_Y = 580;
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
     gfx->setTextSize(1);
+    set_unicode_font();
 
     // Line 1: Context
     gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(5, STATUS_Y + 5);
+    gfx->setCursor(4, STATUS_Y + 13);
     gfx->print("Settings");
 
     // Line 2: Status text or station name
     const char* status_text = state->get_status_text();
     if (status_text[0] != '\0') {
         gfx->setTextColor(MAGENTA);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(status_text);
     } else if (state->get_is_playing()) {
-        char info[29];
-        strncpy(info, state->get_station_name(), 28);
-        info[28] = '\0';
+        char info[48];
+        strncpy(info, state->get_station_name(), 47);
+        info[47] = '\0';
+        utf8_truncate(info, 26);
         gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print(info);
     } else {
         gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(5, STATUS_Y + 20);
+        gfx->setCursor(4, STATUS_Y + 27);
         gfx->print("Not playing");
     }
 
+    clear_unicode_font();
+
     // Line 3: BACK (left) + STOP (right)
-    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "STOP");
+    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
+    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_TEXT, "STOP");
 }
 
 // ------------------------------------------------------------------

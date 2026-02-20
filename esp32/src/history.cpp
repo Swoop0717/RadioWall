@@ -13,6 +13,17 @@
 
 static const char* HISTORY_FILE = "/history.json";
 
+// Helper: truncate UTF-8 string to max N bytes with "..." without splitting multi-byte chars
+static void utf8_truncate(char* buf, size_t max_bytes) {
+    if (strlen(buf) <= max_bytes) return;
+    int i = max_bytes - 3;
+    while (i > 0 && (buf[i] & 0xC0) == 0x80) i--;
+    buf[i++] = '.';
+    buf[i++] = '.';
+    buf[i++] = '.';
+    buf[i] = '\0';
+}
+
 // Layout constants
 static const int TITLE_HEIGHT   = 40;
 static const int ITEM_HEIGHT    = 80;
@@ -197,22 +208,30 @@ static void draw_item(Arduino_GFX* gfx, int slot, const HistoryEntry& e) {
     gfx->fillRoundRect(TH_CARD_MARGIN, card_y, TH_CARD_W, card_h,
                         TH_CORNER_R, TH_CARD);
 
-    // Station title
+    // Station title (Unicode font for CJK/Cyrillic support)
+    gfx->setFont(u8g2_font_cubic11_h_cjk);
+    gfx->setUTF8Print(true);
     gfx->setTextSize(1);
     gfx->setTextColor(TH_TEXT);
-    gfx->setCursor(10, card_y + 16);
+    gfx->setCursor(10, card_y + 18);
 
-    char trunc_title[28];
-    strncpy(trunc_title, e.title, 27);
-    trunc_title[27] = '\0';
+    char trunc_title[48];
+    strncpy(trunc_title, e.title, 47);
+    trunc_title[47] = '\0';
+    utf8_truncate(trunc_title, 26);
     gfx->print(trunc_title);
 
     // Place + country below title
     gfx->setTextColor(TH_TEXT_SEC);
-    gfx->setCursor(10, card_y + 36);
-    char place_str[28];
-    snprintf(place_str, sizeof(place_str), "%.*s, %s", 20, e.place, e.country);
+    gfx->setCursor(10, card_y + 38);
+    char place_str[48];
+    snprintf(place_str, sizeof(place_str), "%s, %s", e.place, e.country);
+    utf8_truncate(place_str, 26);
     gfx->print(place_str);
+
+    // Clear Unicode font
+    gfx->setFont((const uint8_t*)nullptr);
+    gfx->setUTF8Print(false);
 }
 
 void history_render(Arduino_GFX* gfx, int page) {
@@ -231,7 +250,7 @@ void history_render(Arduino_GFX* gfx, int page) {
     } else {
         gfx->print("HISTORY");
     }
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 
     // Divider under title
     gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);

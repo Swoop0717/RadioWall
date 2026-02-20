@@ -304,7 +304,7 @@ static void draw_device_row(Arduino_GFX* gfx, int index, int y_top) {
         gfx->setTextColor(is_grouped ? TH_ACCENT : TH_DIVIDER);
         gfx->setCursor(146, card_y + card_h / 2 + 5);
         gfx->print("G");
-        gfx->setFont(NULL);
+        gfx->setFont((const GFXfont*)nullptr);
 
         // Vertical divider between zones
         gfx->drawFastVLine(SELECT_ZONE_W, card_y + 6, card_h - 12, TH_DIVIDER);
@@ -323,7 +323,7 @@ void settings_render(Arduino_GFX* gfx) {
     gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(36, FONT_SANS_ASCENT + 8);
     gfx->print("SETTINGS");
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 
     // Divider under title
     gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
@@ -428,7 +428,7 @@ void settings_render(Arduino_GFX* gfx) {
     gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(48, rescan_y + RESCAN_ROW_HEIGHT / 2 + 3);
     gfx->print("RESCAN");
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 }
 
 // ------------------------------------------------------------------
@@ -452,7 +452,7 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
             gfx->setTextColor(TH_TEXT);
             gfx->setCursor(48, rescan_y + RESCAN_ROW_HEIGHT / 2 + 3);
             gfx->print("RESCAN");
-            gfx->setFont(NULL);
+            gfx->setFont((const GFXfont*)nullptr);
             delay(80);
         }
         // Show scanning state, scan, then show results

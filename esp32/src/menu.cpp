@@ -64,7 +64,7 @@ static void draw_item(Arduino_GFX* gfx, int index) {
     gfx->setTextColor(text_color);
     gfx->setCursor(38, card_y + card_h / 2 + FONT_SANS_ASCENT / 2 - 1);
     gfx->print(_items[index].label);
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 }
 
 void menu_render(Arduino_GFX* gfx) {
@@ -79,7 +79,7 @@ void menu_render(Arduino_GFX* gfx) {
     gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(56, FONT_SANS_ASCENT + 8);
     gfx->print("MENU");
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 
     // Divider under title
     gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
@@ -120,7 +120,7 @@ bool menu_handle_touch(int portrait_x, int portrait_y, Arduino_GFX* gfx) {
         gfx->setTextColor(TH_TEXT);
         gfx->setCursor(38, card_y + card_h / 2 + FONT_SANS_ASCENT / 2 - 1);
         gfx->print(_items[idx].label);
-        gfx->setFont(NULL);
+        gfx->setFont((const GFXfont*)nullptr);
 
         delay(80);
 

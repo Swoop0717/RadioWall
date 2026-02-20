@@ -13,6 +13,17 @@
 
 static const char* FAVORITES_FILE = "/favorites.json";
 
+// Helper: truncate UTF-8 string to max N bytes with "..." without splitting multi-byte chars
+static void utf8_truncate(char* buf, size_t max_bytes) {
+    if (strlen(buf) <= max_bytes) return;
+    int i = max_bytes - 3;
+    while (i > 0 && (buf[i] & 0xC0) == 0x80) i--;
+    buf[i++] = '.';
+    buf[i++] = '.';
+    buf[i++] = '.';
+    buf[i] = '\0';
+}
+
 // Layout constants
 static const int TITLE_HEIGHT   = 40;
 static const int ITEM_HEIGHT    = 80;
@@ -201,23 +212,30 @@ static void draw_item(Arduino_GFX* gfx, int slot, const FavoriteStation& fav) {
     gfx->fillRoundRect(TH_CARD_MARGIN, card_y, TH_CARD_W, card_h,
                         TH_CORNER_R, TH_CARD);
 
-    // Station title (default font for char count)
+    // Station title (Unicode font for CJK/Cyrillic support)
+    gfx->setFont(u8g2_font_cubic11_h_cjk);
+    gfx->setUTF8Print(true);
     gfx->setTextSize(1);
     gfx->setTextColor(TH_TEXT);
-    gfx->setCursor(10, card_y + 16);
+    gfx->setCursor(10, card_y + 18);
 
-    char trunc_title[19];
-    strncpy(trunc_title, fav.title, 18);
-    trunc_title[18] = '\0';
+    char trunc_title[32];
+    strncpy(trunc_title, fav.title, 31);
+    trunc_title[31] = '\0';
+    utf8_truncate(trunc_title, 18);
     gfx->print(trunc_title);
 
     // Place + country below title
     gfx->setTextColor(TH_TEXT_SEC);
-    gfx->setCursor(10, card_y + 36);
-    char place_str[20];
-    snprintf(place_str, sizeof(place_str), "%.*s, %s",
-             12, fav.place, fav.country);
+    gfx->setCursor(10, card_y + 38);
+    char place_str[32];
+    snprintf(place_str, sizeof(place_str), "%s, %s", fav.place, fav.country);
+    utf8_truncate(place_str, 18);
     gfx->print(place_str);
+
+    // Clear Unicode font
+    gfx->setFont((const uint8_t*)nullptr);
+    gfx->setUTF8Print(false);
 
     // Delete "x" on right side
     gfx->setFont(&FreeSansBold10pt7b);
@@ -225,7 +243,7 @@ static void draw_item(Arduino_GFX* gfx, int slot, const FavoriteStation& fav) {
     gfx->setTextColor(TH_TEXT_DIM);
     gfx->setCursor(148, card_y + card_h / 2 + 5);
     gfx->print("x");
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 
     // Vertical divider between play and delete zones
     gfx->drawFastVLine(PLAY_ZONE_W, card_y + 6, card_h - 12, TH_DIVIDER);
@@ -247,7 +265,7 @@ void favorites_render(Arduino_GFX* gfx, int page) {
     } else {
         gfx->print("FAVORITES");
     }
-    gfx->setFont(NULL);
+    gfx->setFont((const GFXfont*)nullptr);
 
     // Divider under title
     gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
@@ -323,7 +341,7 @@ bool favorites_handle_touch(int x, int y, Arduino_GFX* gfx) {
             gfx->setTextColor(TH_TEXT);
             gfx->setCursor(132, card_y + card_h / 2 + 5);
             gfx->print("DEL");
-            gfx->setFont(NULL);
+            gfx->setFont((const GFXfont*)nullptr);
             delay(150);
         }
         if (_delete_cb) {
