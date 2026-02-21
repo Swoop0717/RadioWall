@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include "config.h"
+#include "udp_log.h"
 
 #if USE_BUILTIN_TOUCH
   #include "builtin_touch.h"
@@ -695,6 +696,9 @@ void setup() {
 
     Serial.printf("[WiFi] Connected: %s\n", WiFi.localIP().toString().c_str());
 
+    // Initialize UDP logger (for debugging in USB Host mode where Serial is unavailable)
+    udp_log_init();
+
     // Initialize mDNS (for device discovery)
     if (MDNS.begin("radiowall")) {
         Serial.println("[mDNS] Started as radiowall.local");
@@ -760,6 +764,14 @@ void setup() {
         builtin_touch_set_volume_change_callback(on_volume_change);
         builtin_touch_set_map_double_tap_callback(on_map_double_tap);
         builtin_touch_set_ui_state(&ui_state);
+    #else
+        usb_touch_set_map_callback(on_map_touch);
+        usb_touch_set_ui_button_callback(on_ui_button);
+        usb_touch_set_menu_callback(on_menu_touch);
+        usb_touch_set_swipe_callback(on_swipe);
+        usb_touch_set_volume_change_callback(on_volume_change);
+        usb_touch_set_map_double_tap_callback(on_map_double_tap);
+        usb_touch_set_ui_state(&ui_state);
     #endif
 
     // Resume previous playback or stop stale WiiM playback

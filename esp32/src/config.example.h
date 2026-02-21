@@ -52,7 +52,10 @@
 // Touch Mode Settings
 // =============================================================================
 // Use built-in touchscreen (1) or external USB touch panel (0)
+// Override via build_flags: -DUSE_BUILTIN_TOUCH=0 for USB touch mode
+#ifndef USE_BUILTIN_TOUCH
 #define USE_BUILTIN_TOUCH 1
+#endif
 
 // Touch mapping mode (only used for legacy stretch/fit mapping)
 #define TOUCH_MAP_MODE_FIT 1
