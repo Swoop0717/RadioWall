@@ -97,8 +97,9 @@ void builtin_touch_init() {
     // Configure power management chip (from working example)
     // Disable ILIM pin and set input current limit to maximum
     IIC_WriteC8D8(0x6A, 0x00, 0B00111111);
-    // Turn off BATFET without using battery
-    IIC_WriteC8D8(0x6A, 0x09, 0B01100100);
+    // Enable BATFET for LiPo battery operation
+    // Reg 0x09: bit6=1 (delay before BATFET turnoff), bit5=0 (BATFET enabled), bit2=1 (safety timer)
+    IIC_WriteC8D8(0x6A, 0x09, 0B01000100);
 
     // Attach interrupt for touch events
     attachInterrupt(digitalPinToInterrupt(TOUCH_INT), AXS15231_Touch_ISR, FALLING);
@@ -301,7 +302,8 @@ static void handle_touch_down(uint16_t x, uint16_t y, unsigned long now) {
         _touch_start_zone = ZONE_STATUS_BAR;
     } else if (_ui_state) {
         ViewMode mode = _ui_state->get_view_mode();
-        if (mode == VIEW_MENU || mode == VIEW_FAVORITES || mode == VIEW_SETTINGS || mode == VIEW_HISTORY) _touch_start_zone = ZONE_MENU;
+        if (mode == VIEW_MENU || mode == VIEW_FAVORITES || mode == VIEW_SETTINGS
+            || mode == VIEW_HISTORY || mode == VIEW_SETTINGS_WIFI || mode == VIEW_SETTINGS_DEVICES) _touch_start_zone = ZONE_MENU;
         else if (mode == VIEW_VOLUME) _touch_start_zone = ZONE_VOLUME;
         else _touch_start_zone = ZONE_MAP;
     } else {

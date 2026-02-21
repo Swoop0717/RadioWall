@@ -19,6 +19,7 @@ void display_loop();
 void display_show_nowplaying(const char* station, const char* location, const char* country);
 void display_show_status(const char* status);
 void display_show_connecting();
+void display_show_wifi_portal(bool show_cancel = false);
 
 // Map view functions
 void display_show_map_view(UIState* state);         // Full redraw
@@ -42,6 +43,10 @@ void display_show_history_view(UIState* state);
 // Settings view functions
 void display_show_settings_view(UIState* state);
 void display_update_status_bar_settings(UIState* state);
+
+// Settings sub-page views
+void display_show_settings_wifi_view(UIState* state);
+void display_show_settings_devices_view(UIState* state);
 
 // Map marker at lat/lon (converts to portrait coords using current slice)
 void display_draw_marker_at_latlon(float lat, float lon, UIState* state);

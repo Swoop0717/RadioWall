@@ -65,17 +65,46 @@ static void clear_unicode_font() {
     gfx->setUTF8Print(false);
 }
 
-// Helper: draw a rounded button in the status bar
-static void draw_status_button(int x, int y, int w, int h, uint16_t text_color, const char* label) {
+// Helper: draw a status bar icon button (icon-only, centered)
+static void draw_status_icon_btn(int x, int y, int w, int h, uint16_t color,
+                                  void (*draw_icon)(Arduino_GFX*, int, int, uint16_t)) {
     gfx->fillRoundRect(x, y, w, h, TH_CORNER_R, TH_BTN);
-    gfx->setFont(&FreeSansBold10pt7b);
-    gfx->setTextSize(1);
-    gfx->setTextColor(text_color);
-    // Center text in button
-    int text_x = x + (w - strlen(label) * 10) / 2;
-    gfx->setCursor(text_x, y + h / 2 + 5);
-    gfx->print(label);
-    gfx->setFont((const GFXfont*)nullptr);
+    draw_icon(gfx, x + w / 2, y + h / 2, color);
+}
+
+// Icon primitives for status bar buttons
+static void icon_hamburger(Arduino_GFX* g, int cx, int cy, uint16_t c) {
+    g->fillRect(cx - 6, cy - 4, 12, 2, c);
+    g->fillRect(cx - 6, cy - 1, 12, 2, c);
+    g->fillRect(cx - 6, cy + 2, 12, 2, c);
+}
+
+static void icon_back_arrow(Arduino_GFX* g, int cx, int cy, uint16_t c) {
+    g->fillTriangle(cx + 5, cy - 6, cx + 5, cy + 6, cx - 5, cy, c);
+}
+
+static void icon_next_arrow(Arduino_GFX* g, int cx, int cy, uint16_t c) {
+    g->fillTriangle(cx - 5, cy - 6, cx - 5, cy + 6, cx + 5, cy, c);
+}
+
+static void icon_plus(Arduino_GFX* g, int cx, int cy, uint16_t c) {
+    g->fillRect(cx - 1, cy - 5, 3, 11, c);
+    g->fillRect(cx - 5, cy - 1, 11, 3, c);
+}
+
+static void icon_x_mark(Arduino_GFX* g, int cx, int cy, uint16_t c) {
+    for (int d = -1; d <= 1; d++) {
+        g->drawLine(cx - 4 + d, cy - 4, cx + 4 + d, cy + 4, c);
+        g->drawLine(cx + 4 + d, cy - 4, cx - 4 + d, cy + 4, c);
+    }
+}
+
+static void icon_mute(Arduino_GFX* g, int cx, int cy, uint16_t c) {
+    // Small speaker with X
+    g->fillRect(cx - 5, cy - 2, 4, 5, c);
+    g->fillTriangle(cx - 1, cy - 5, cx - 1, cy + 5, cx + 3, cy, c);
+    g->drawLine(cx + 4, cy - 3, cx + 7, cy + 3, c);
+    g->drawLine(cx + 7, cy - 3, cx + 4, cy + 3, c);
 }
 
 void display_init() {
@@ -209,6 +238,53 @@ void display_show_connecting() {
         gfx->setCursor(180, 90);
         gfx->print("Connecting...");
         gfx->setFont((const GFXfont*)nullptr);
+    }
+}
+
+void display_show_wifi_portal(bool show_cancel) {
+    Serial.println("[Display] Showing WiFi portal instructions...");
+
+    if (gfx) {
+        gfx->fillScreen(BLACK);
+
+        // Title
+        gfx->setFont(&FreeSansBold10pt7b);
+        gfx->setTextSize(1);
+        gfx->setTextColor(TH_ACCENT);
+        gfx->setCursor(20, 60);
+        gfx->print("WiFi Setup");
+        gfx->setFont((const GFXfont*)nullptr);
+
+        gfx->setTextSize(1);
+
+        // Step 1
+        gfx->setTextColor(TH_TEXT);
+        gfx->setCursor(10, 100);
+        gfx->print("1. Connect to");
+        gfx->setTextColor(TH_WARNING);
+        gfx->setCursor(10, 118);
+        gfx->print("  \"RadioWall\"");
+        gfx->setTextColor(TH_TEXT);
+        gfx->setCursor(10, 136);
+        gfx->print("  WiFi network");
+
+        // Step 2
+        gfx->setCursor(10, 170);
+        gfx->print("2. Open browser");
+
+        // IP address
+        gfx->setTextColor(TH_ACCENT);
+        gfx->setFont(&FreeSansBold10pt7b);
+        gfx->setCursor(10, 220);
+        gfx->print("192.168.4.1");
+        gfx->setFont((const GFXfont*)nullptr);
+
+        // Cancel hint (only when opened from settings)
+        if (show_cancel) {
+            gfx->setTextColor(TH_TEXT_SEC);
+            gfx->setCursor(10, 270);
+            gfx->print("Press button to cancel");
+        }
     }
 }
 
@@ -384,9 +460,9 @@ void display_update_status_bar(UIState* state) {
 
     clear_unicode_font();
 
-    // Line 3: STOP and NEXT buttons (90px each, rounded)
-    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_TEXT, "STOP");
-    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_TEXT, "NEXT");
+    // Line 3: MENU and NEXT icon buttons (90px each)
+    draw_status_icon_btn(0, STATUS_Y + 35, 88, 25, TH_ACCENT, icon_hamburger);
+    draw_status_icon_btn(90, STATUS_Y + 35, 90, 25, TH_ACCENT, icon_next_arrow);
 }
 
 /**
@@ -421,7 +497,7 @@ void display_show_menu_view(UIState* state) {
 }
 
 /**
- * Update status bar for menu mode (BACK + STOP)
+ * Update status bar for menu mode (BACK icon only)
  */
 void display_update_status_bar_menu(UIState* state) {
     if (!gfx) return;
@@ -430,34 +506,9 @@ void display_update_status_bar_menu(UIState* state) {
     const int STATUS_H = 60;
 
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, STATUS_H, TH_BG);
-    gfx->setTextSize(1);
-    set_unicode_font();
 
-    // Line 1: Context label
-    gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(4, STATUS_Y + 13);
-    gfx->print("Menu");
-
-    // Line 2: Station name
-    if (state->get_is_playing()) {
-        char info[48];
-        strncpy(info, state->get_station_name(), 47);
-        info[47] = '\0';
-        utf8_truncate(info, 26);
-        gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print(info);
-    } else {
-        gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print("Not playing");
-    }
-
-    clear_unicode_font();
-
-    // Line 3: BACK (left) + STOP (right)
-    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_TEXT, "STOP");
+    // Full-width BACK button
+    draw_status_icon_btn(0, STATUS_Y + 18, TH_DISPLAY_W, 28, TH_ACCENT, icon_back_arrow);
 }
 
 // ------------------------------------------------------------------
@@ -492,12 +543,12 @@ void display_show_volume_view(UIState* state) {
     // Draw the slider
     display_update_volume_bar(state);
 
-    // Status bar: BACK + MUTE
+    // Status bar: BACK + MUTE icons
     const int STATUS_Y = 580;
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
 
-    draw_status_button(0, STATUS_Y + 35, 88, 25, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 35, 90, 25, TH_TEXT, "MUTE");
+    draw_status_icon_btn(0, STATUS_Y + 18, 88, 28, TH_ACCENT, icon_back_arrow);
+    draw_status_icon_btn(90, STATUS_Y + 18, 90, 28, TH_ACCENT, icon_mute);
 
     Serial.println("[Display] Volume view complete!");
 }
@@ -554,42 +605,12 @@ void display_show_favorites_view(UIState* state) {
 
     favorites_render(gfx, favorites_get_page());
 
-    // Status bar: BACK + ADD
+    // Status bar: BACK + ADD icons
     const int STATUS_Y = 580;
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
-    gfx->setTextSize(1);
-    set_unicode_font();
 
-    // Line 1: Context
-    gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(4, STATUS_Y + 13);
-    gfx->print("Favorites");
-
-    // Line 2: Status text or station name
-    const char* status_text = state->get_status_text();
-    if (status_text[0] != '\0') {
-        gfx->setTextColor(MAGENTA);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print(status_text);
-    } else if (state->get_is_playing()) {
-        char info[48];
-        strncpy(info, state->get_station_name(), 47);
-        info[47] = '\0';
-        utf8_truncate(info, 26);
-        gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print(info);
-    } else {
-        gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print("Not playing");
-    }
-
-    clear_unicode_font();
-
-    // Line 3: BACK (left) + ADD (right)
-    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_PLAYING, "ADD");
+    draw_status_icon_btn(0, STATUS_Y + 18, 88, 28, TH_ACCENT, icon_back_arrow);
+    draw_status_icon_btn(90, STATUS_Y + 18, 90, 28, TH_ACCENT, icon_plus);
 }
 
 // ------------------------------------------------------------------
@@ -603,42 +624,12 @@ void display_show_history_view(UIState* state) {
 
     history_render(gfx, history_get_page());
 
-    // Status bar: BACK + CLEAR
+    // Status bar: BACK + CLEAR icons
     const int STATUS_Y = 580;
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
-    gfx->setTextSize(1);
-    set_unicode_font();
 
-    // Line 1: Context
-    gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(4, STATUS_Y + 13);
-    gfx->print("History");
-
-    // Line 2: Status text or station name
-    const char* status_text = state->get_status_text();
-    if (status_text[0] != '\0') {
-        gfx->setTextColor(MAGENTA);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print(status_text);
-    } else if (state->get_is_playing()) {
-        char info[48];
-        strncpy(info, state->get_station_name(), 47);
-        info[47] = '\0';
-        utf8_truncate(info, 26);
-        gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print(info);
-    } else {
-        gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print("Not playing");
-    }
-
-    clear_unicode_font();
-
-    // Line 3: BACK (left) + CLEAR (right)
-    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_DANGER, "CLEAR");
+    draw_status_icon_btn(0, STATUS_Y + 18, 88, 28, TH_ACCENT, icon_back_arrow);
+    draw_status_icon_btn(90, STATUS_Y + 18, 90, 28, TH_DANGER, icon_x_mark);
 }
 
 // ------------------------------------------------------------------
@@ -661,39 +652,21 @@ void display_update_status_bar_settings(UIState* state) {
 
     const int STATUS_Y = 580;
     gfx->fillRect(0, STATUS_Y, TH_DISPLAY_W, 60, TH_BG);
-    gfx->setTextSize(1);
-    set_unicode_font();
 
-    // Line 1: Context
-    gfx->setTextColor(TH_ACCENT);
-    gfx->setCursor(4, STATUS_Y + 13);
-    gfx->print("Settings");
+    // Full-width BACK button
+    draw_status_icon_btn(0, STATUS_Y + 18, TH_DISPLAY_W, 28, TH_ACCENT, icon_back_arrow);
+}
 
-    // Line 2: Status text or station name
-    const char* status_text = state->get_status_text();
-    if (status_text[0] != '\0') {
-        gfx->setTextColor(MAGENTA);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print(status_text);
-    } else if (state->get_is_playing()) {
-        char info[48];
-        strncpy(info, state->get_station_name(), 47);
-        info[47] = '\0';
-        utf8_truncate(info, 26);
-        gfx->setTextColor(TH_PLAYING);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print(info);
-    } else {
-        gfx->setTextColor(TH_TEXT_SEC);
-        gfx->setCursor(4, STATUS_Y + 27);
-        gfx->print("Not playing");
-    }
+void display_show_settings_wifi_view(UIState* state) {
+    if (!gfx) return;
+    settings_wifi_render(gfx);
+    display_update_status_bar_settings(state);
+}
 
-    clear_unicode_font();
-
-    // Line 3: BACK (left) + STOP (right)
-    draw_status_button(0, STATUS_Y + 37, 88, 23, TH_WARNING, "BACK");
-    draw_status_button(90, STATUS_Y + 37, 90, 23, TH_TEXT, "STOP");
+void display_show_settings_devices_view(UIState* state) {
+    if (!gfx) return;
+    settings_devices_render(gfx);
+    display_update_status_bar_settings(state);
 }
 
 // ------------------------------------------------------------------

@@ -155,7 +155,7 @@ void UIState::set_view_mode(ViewMode mode) {
 }
 
 bool UIState::is_menu_active() const {
-    return _view_mode == VIEW_MENU || _view_mode == VIEW_VOLUME || _view_mode == VIEW_FAVORITES || _view_mode == VIEW_HISTORY || _view_mode == VIEW_SETTINGS;
+    return _view_mode != VIEW_MAP;
 }
 
 void UIState::set_volume(int vol) {

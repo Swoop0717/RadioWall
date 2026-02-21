@@ -27,6 +27,7 @@ static const unsigned long RECONNECT_INTERVAL_MS = 5000;
 static void wifi_connect() {
     if (WiFi.status() == WL_CONNECTED) return;
 
+#if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
     Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -42,6 +43,9 @@ static void wifi_connect() {
     }
 
     Serial.printf("\n[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
+#else
+    Serial.println("[WiFi] No hardcoded credentials - use WiFiManager");
+#endif
 }
 
 // ------------------------------------------------------------------

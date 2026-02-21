@@ -16,12 +16,14 @@ class Arduino_GFX;
 // Menu item identifiers
 enum MenuItemId {
     MENU_VOLUME = 0,
-    MENU_PAUSE_RESUME,
+    MENU_PAUSE_RESUME,      // Left third of split row
     MENU_FAVORITES,
     MENU_HISTORY,
     MENU_SLEEP_TIMER,
     MENU_SETTINGS,
-    MENU_ITEM_COUNT  // sentinel = 6
+    MENU_ITEM_COUNT,        // sentinel = 6
+    MENU_STOP,              // Middle third of split row
+    MENU_POWER_OFF          // Right third of split row
 };
 
 // Menu item definition

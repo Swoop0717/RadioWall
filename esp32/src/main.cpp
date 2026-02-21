@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include "config.h"
 
 #if USE_BUILTIN_TOUCH
@@ -38,6 +39,7 @@
 // ------------------------------------------------------------------
 
 static UIState ui_state;
+WiFiManager wm;  // Global so settings.cpp can access it via extern
 
 // Forward declarations
 static void record_to_history(const StationInfo* station);
@@ -362,17 +364,18 @@ static void on_ui_button(int button_id) {
             display_show_history_view(&ui_state);
         }
     } else if (mode == VIEW_SETTINGS) {
-        // Settings mode: left = BACK (to menu), right = STOP
+        // Settings sub-menu: left = BACK (to main menu)
         if (button_id == 0) {
             Serial.println("[Main] BACK (to menu)");
             ui_state.set_view_mode(VIEW_MENU);
             display_show_menu_view(&ui_state);
-        } else if (button_id == 1) {
-            Serial.println("[Main] STOP (from settings)");
-            radio_stop();
-            ui_state.set_stopped();
-            clear_playback_state();
-            display_update_status_bar_settings(&ui_state);
+        }
+    } else if (mode == VIEW_SETTINGS_WIFI || mode == VIEW_SETTINGS_DEVICES) {
+        // Settings sub-pages: left = BACK (to settings menu)
+        if (button_id == 0) {
+            Serial.println("[Main] BACK (to settings)");
+            ui_state.set_view_mode(VIEW_SETTINGS);
+            display_show_settings_view(&ui_state);
         }
     } else if (mode == VIEW_VOLUME) {
         // Volume mode: left = BACK (to menu), right = MUTE
@@ -384,25 +387,16 @@ static void on_ui_button(int button_id) {
             Serial.println("[Main] MUTE (TODO)");
         }
     } else if (mode == VIEW_MENU) {
-        // Menu mode: left = BACK, right = STOP
+        // Menu mode: left = BACK
         if (button_id == 0) {
             Serial.println("[Main] BACK (to map)");
             toggle_menu();
-        } else if (button_id == 1) {
-            Serial.println("[Main] STOP (from menu)");
-            radio_stop();
-            ui_state.set_stopped();
-            clear_playback_state();
-            display_update_status_bar_menu(&ui_state);
         }
     } else {
-        // Map mode: left = STOP, right = NEXT
+        // Map mode: left = MENU, right = NEXT
         if (button_id == 0) {
-            Serial.println("[Main] STOP");
-            radio_stop();
-            ui_state.set_stopped();
-            clear_playback_state();
-            display_update_status_bar(&ui_state);
+            Serial.println("[Main] MENU (from map)");
+            toggle_menu();
         } else if (button_id == 1) {
             Serial.println("[Main] NEXT");
             ui_state.set_status_text("Loading...");
@@ -614,9 +608,18 @@ static void on_menu_item(MenuItemId item_id) {
         }
         case MENU_SETTINGS:
             ui_state.set_view_mode(VIEW_SETTINGS);
-            display_show_settings_view(&ui_state);  // Shows "Scanning..."
-            settings_start_scan();                   // Blocking ~2s mDNS query
-            display_show_settings_view(&ui_state);  // Shows results
+            display_show_settings_view(&ui_state);
+            break;
+        case MENU_STOP:
+            Serial.println("[Main] Stop from menu");
+            radio_stop();
+            ui_state.set_stopped();
+            clear_playback_state();
+            display_update_status_bar_menu(&ui_state);
+            break;
+        case MENU_POWER_OFF:
+            Serial.println("[Main] Power Off from menu");
+            settings_power_off();
             break;
         default: break;
     }
@@ -630,7 +633,23 @@ static void on_menu_touch(int portrait_x, int portrait_y) {
     } else if (mode == VIEW_HISTORY) {
         history_handle_touch(portrait_x, portrait_y, display_get_gfx());
     } else if (mode == VIEW_SETTINGS) {
-        settings_handle_touch(portrait_x, portrait_y, display_get_gfx());
+        // Settings sub-menu: detect which item was tapped
+        if (settings_handle_touch(portrait_x, portrait_y, display_get_gfx())) {
+            // Determine which item: y < TITLE(40)+ITEM(80) = WiFi, else Devices
+            int idx = (portrait_y - 40) / 80;
+            if (idx == 0) {
+                ui_state.set_view_mode(VIEW_SETTINGS_WIFI);
+                display_show_settings_wifi_view(&ui_state);
+            } else if (idx == 1) {
+                ui_state.set_view_mode(VIEW_SETTINGS_DEVICES);
+                settings_start_scan();
+                display_show_settings_devices_view(&ui_state);
+            }
+        }
+    } else if (mode == VIEW_SETTINGS_WIFI) {
+        settings_wifi_handle_touch(portrait_x, portrait_y, display_get_gfx());
+    } else if (mode == VIEW_SETTINGS_DEVICES) {
+        settings_devices_handle_touch(portrait_x, portrait_y, display_get_gfx());
     } else {
         menu_handle_touch(portrait_x, portrait_y, display_get_gfx());
     }
@@ -654,16 +673,27 @@ void setup() {
         Serial.println("[Main] WARNING: No places.bin - run 'pio run -t uploadfs'");
     }
 
-    // Connect to WiFi (retry until connected — no WiFi = no radio)
+    // Connect to WiFi
+    // First try saved credentials (STA mode only, no AP).
+    // Only open captive portal if no creds or connection fails.
+    WiFi.mode(WIFI_STA);
     display_show_connecting();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
+    Serial.println("[WiFi] Connecting with saved credentials...");
 
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+    wm.setConnectTimeout(20);
+    wm.setEnableConfigPortal(false);  // Don't auto-open portal
+    bool connected = wm.autoConnect("RadioWall");
+
+    if (!connected) {
+        // No saved creds or connection failed — open captive portal
+        Serial.println("[WiFi] No saved creds or failed — opening portal");
+        display_show_wifi_portal(false);
+        wm.setConfigPortalTimeout(0);  // Wait forever until configured
+        wm.setEnableConfigPortal(true);
+        wm.startConfigPortal("RadioWall");
     }
-    Serial.printf("\n[WiFi] Connected: %s\n", WiFi.localIP().toString().c_str());
+
+    Serial.printf("[WiFi] Connected: %s\n", WiFi.localIP().toString().c_str());
 
     // Initialize mDNS (for device discovery)
     if (MDNS.begin("radiowall")) {
@@ -744,10 +774,30 @@ void setup() {
     Serial.printf("[Main] Ready - Region: %s\n", ui_state.get_current_slice().name);
 }
 
+// ------------------------------------------------------------------
+// WiFi serial commands
+// ------------------------------------------------------------------
+
+static void wifi_serial_task() {
+    if (!Serial.available()) return;
+    char cmd = Serial.peek();
+    if (cmd != 'R') return;
+
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line == "RESET_WIFI") {
+        Serial.println("[WiFi] Clearing saved credentials and restarting...");
+        wm.resetSettings();
+        delay(500);
+        ESP.restart();
+    }
+}
+
 void loop() {
     touch_task();
     button_task();
     display_loop();
+    wifi_serial_task();
     places_db_serial_task();
     linkplay_serial_task();
 }

@@ -10,8 +10,11 @@
 // =============================================================================
 // WiFi Settings
 // =============================================================================
-#define WIFI_SSID "your_wifi_ssid"
-#define WIFI_PASSWORD "your_wifi_password"
+// WiFi credentials are now OPTIONAL — WiFiManager captive portal handles setup.
+// On first boot, ESP32 creates "RadioWall" AP. Connect and configure via browser.
+// Uncomment below only if you want hardcoded fallback (e.g., for mqtt_client).
+// #define WIFI_SSID "your_wifi_ssid"
+// #define WIFI_PASSWORD "your_wifi_password"
 
 // WiFi connection timeout (milliseconds)
 #define WIFI_CONNECT_TIMEOUT 10000

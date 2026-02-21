@@ -38,11 +38,17 @@ const char* settings_get_wiim_ip();
 // Start mDNS scan for LinkPlay devices (blocking, ~2s)
 void settings_start_scan();
 
-// Rendering
+// Settings sub-menu (WiFi / Devices)
 void settings_render(Arduino_GFX* gfx);
-
-// Touch handling (returns true if handled)
 bool settings_handle_touch(int x, int y, Arduino_GFX* gfx);
+
+// WiFi info page
+void settings_wifi_render(Arduino_GFX* gfx);
+bool settings_wifi_handle_touch(int x, int y, Arduino_GFX* gfx);
+
+// Devices page
+void settings_devices_render(Arduino_GFX* gfx);
+bool settings_devices_handle_touch(int x, int y, Arduino_GFX* gfx);
 
 // Callbacks
 void settings_set_device_callback(DeviceSelectedCallback cb);
@@ -55,5 +61,14 @@ int settings_get_group_ips(char ips[][16], int max_count);
 int settings_get_zoom();
 void settings_set_zoom(int level, Arduino_GFX* gfx);
 void settings_set_zoom_no_render(int level);
+
+// WiFi reset (clear saved credentials and restart into captive portal)
+void settings_wifi_reset();
+
+// Start WiFi captive portal (for setup when disconnected)
+void settings_wifi_start_portal();
+
+// Power off (deep sleep, wakes on button press)
+void settings_power_off();
 
 #endif // SETTINGS_H

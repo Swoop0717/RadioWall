@@ -8,11 +8,16 @@
 #include "settings.h"
 #include "config.h"
 #include "theme.h"
+#include "display.h"
 #include "Arduino_GFX_Library.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
+#include "esp_sleep.h"
+
+extern WiFiManager wm;  // Defined in main.cpp
 
 static const char* SETTINGS_FILE = "/settings.json";
 
@@ -22,10 +27,7 @@ static const int CURRENT_SECTION_HEIGHT = 50;
 static const int DEVICE_ROW_HEIGHT     = 60;
 static const int RESCAN_ROW_HEIGHT     = 60;
 static const int SETTINGS_AREA_BOTTOM  = 580;
-
-// Zoom and WiFi rows
-static const int ZOOM_ROW_HEIGHT = 40;
-static const int WIFI_ROW_HEIGHT = 40;
+static const int MENU_ITEM_HEIGHT      = 80;  // Same as main menu
 
 // State
 static DiscoveredDevice _devices[MAX_DISCOVERED_DEVICES];
@@ -251,7 +253,259 @@ int settings_get_group_ips(char ips[][16], int max_count) {
 }
 
 // ------------------------------------------------------------------
-// Rendering
+// Rendering: Settings sub-menu (2 items: WiFi, Devices)
+// ------------------------------------------------------------------
+
+static void draw_settings_item(Arduino_GFX* gfx, int index, const char* label,
+                                const uint8_t* icon, uint16_t icon_color) {
+    int y_top = TITLE_HEIGHT + index * MENU_ITEM_HEIGHT;
+    int card_y = y_top + 4;
+    int card_h = MENU_ITEM_HEIGHT - 8;
+
+    gfx->fillRoundRect(TH_CARD_MARGIN, card_y, TH_CARD_W, card_h,
+                        TH_CORNER_R, TH_CARD);
+
+    int icon_y = card_y + (card_h - 16) / 2;
+    gfx->drawBitmap(14, icon_y, icon, 16, 16, icon_color);
+
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_TEXT);
+    gfx->setCursor(38, card_y + card_h / 2 + FONT_SANS_ASCENT / 2 - 1);
+    gfx->print(label);
+    gfx->setFont((const GFXfont*)nullptr);
+}
+
+void settings_render(Arduino_GFX* gfx) {
+    if (!gfx) return;
+
+    gfx->fillRect(0, 0, TH_DISPLAY_W, SETTINGS_AREA_BOTTOM, TH_BG);
+
+    // Title
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(36, FONT_SANS_ASCENT + 8);
+    gfx->print("SETTINGS");
+    gfx->setFont((const GFXfont*)nullptr);
+
+    gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
+
+    // Item 0: WiFi
+    // Use a simple "W" indicator for WiFi status
+    draw_settings_item(gfx, 0, "WiFi", ICON_GEAR, TH_ACCENT);
+
+    // Item 1: Devices
+    draw_settings_item(gfx, 1, "Devices", ICON_VOLUME, TH_ACCENT);
+}
+
+bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
+    if (y < TITLE_HEIGHT) return false;
+
+    int idx = (y - TITLE_HEIGHT) / MENU_ITEM_HEIGHT;
+    if (idx < 0 || idx > 1) return false;
+
+    // Highlight feedback
+    if (gfx) {
+        int card_y = TITLE_HEIGHT + idx * MENU_ITEM_HEIGHT + 4;
+        int card_h = MENU_ITEM_HEIGHT - 8;
+        gfx->fillRoundRect(TH_CARD_MARGIN, card_y, TH_CARD_W, card_h,
+                            TH_CORNER_R, TH_CARD_HI);
+        delay(80);
+    }
+
+    // Return the index: 0=WiFi, 1=Devices
+    // The callback routing happens in main.cpp via the touch handler
+    Serial.printf("[Settings] Tapped: %s\n", idx == 0 ? "WiFi" : "Devices");
+    return true;  // Caller checks which item via coordinates
+}
+
+// ------------------------------------------------------------------
+// Rendering: WiFi info page
+// ------------------------------------------------------------------
+
+// WiFi icon (16x16): signal bars
+static const uint8_t ICON_WIFI[] PROGMEM = {
+    0x00, 0x00, 0x03, 0xC0, 0x0F, 0xF0, 0x1C, 0x38,
+    0x30, 0x0C, 0x67, 0xE6, 0x0F, 0xF0, 0x18, 0x18,
+    0x03, 0xC0, 0x07, 0xE0, 0x01, 0x80, 0x01, 0x80,
+    0x03, 0xC0, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00
+};
+
+void settings_wifi_render(Arduino_GFX* gfx) {
+    if (!gfx) return;
+
+    gfx->fillRect(0, 0, TH_DISPLAY_W, SETTINGS_AREA_BOTTOM, TH_BG);
+
+    // Title
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_ACCENT);
+    gfx->setCursor(60, FONT_SANS_ASCENT + 8);
+    gfx->print("WIFI");
+    gfx->setFont((const GFXfont*)nullptr);
+
+    gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
+
+    bool connected = (WiFi.status() == WL_CONNECTED);
+    int row_y = TITLE_HEIGHT + 10;
+
+    // Status indicator
+    gfx->setTextSize(1);
+    gfx->setTextColor(connected ? TH_PLAYING : TH_DANGER);
+    gfx->setCursor(10, row_y);
+    gfx->print(connected ? "Connected" : "Disconnected");
+    row_y += 24;
+
+    if (connected) {
+        // SSID
+        gfx->setTextColor(TH_TEXT_SEC);
+        gfx->setCursor(10, row_y);
+        gfx->print("SSID:");
+        row_y += 14;
+        gfx->setTextColor(TH_TEXT);
+        gfx->setCursor(10, row_y);
+        char ssid_buf[24];
+        strncpy(ssid_buf, WiFi.SSID().c_str(), 23);
+        ssid_buf[23] = '\0';
+        gfx->print(ssid_buf);
+        row_y += 22;
+
+        // Device IP
+        gfx->setTextColor(TH_TEXT_SEC);
+        gfx->setCursor(10, row_y);
+        gfx->print("IP:");
+        row_y += 14;
+        gfx->setTextColor(TH_TEXT);
+        gfx->setCursor(10, row_y);
+        gfx->print(WiFi.localIP().toString().c_str());
+        row_y += 22;
+
+        // Gateway
+        gfx->setTextColor(TH_TEXT_SEC);
+        gfx->setCursor(10, row_y);
+        gfx->print("Gateway:");
+        row_y += 14;
+        gfx->setTextColor(TH_TEXT);
+        gfx->setCursor(10, row_y);
+        gfx->print(WiFi.gatewayIP().toString().c_str());
+        row_y += 22;
+
+        // Signal strength
+        gfx->setTextColor(TH_TEXT_SEC);
+        gfx->setCursor(10, row_y);
+        gfx->print("Signal:");
+        row_y += 14;
+        gfx->setTextColor(TH_TEXT);
+        gfx->setCursor(10, row_y);
+        int rssi = WiFi.RSSI();
+        gfx->printf("%d dBm", rssi);
+        row_y += 22;
+
+        // MAC
+        gfx->setTextColor(TH_TEXT_SEC);
+        gfx->setCursor(10, row_y);
+        gfx->print("MAC:");
+        row_y += 14;
+        gfx->setTextColor(TH_TEXT);
+        gfx->setCursor(10, row_y);
+        gfx->print(WiFi.macAddress().c_str());
+        row_y += 30;
+    }
+
+    // Divider before buttons
+    gfx->drawFastHLine(5, row_y, TH_DISPLAY_W - 10, TH_DIVIDER);
+    row_y += 10;
+
+    // "Start AP Setup" button
+    int btn_h = 44;
+    gfx->fillRoundRect(TH_CARD_MARGIN, row_y, TH_CARD_W, btn_h,
+                        TH_CORNER_R, TH_CARD);
+    gfx->drawRoundRect(TH_CARD_MARGIN, row_y, TH_CARD_W, btn_h,
+                        TH_CORNER_R, TH_WARNING);
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_WARNING);
+    gfx->setCursor(18, row_y + btn_h / 2 + FONT_SANS_ASCENT / 2 - 1);
+    gfx->print("AP Setup");
+    gfx->setFont((const GFXfont*)nullptr);
+
+    row_y += btn_h + 10;
+
+    // "Reset WiFi" button
+    gfx->fillRoundRect(TH_CARD_MARGIN, row_y, TH_CARD_W, btn_h,
+                        TH_CORNER_R, TH_CARD);
+    gfx->drawRoundRect(TH_CARD_MARGIN, row_y, TH_CARD_W, btn_h,
+                        TH_CORNER_R, TH_DANGER);
+    gfx->setFont(&FreeSansBold10pt7b);
+    gfx->setTextSize(1);
+    gfx->setTextColor(TH_DANGER);
+    gfx->setCursor(18, row_y + btn_h / 2 + FONT_SANS_ASCENT / 2 - 1);
+    gfx->print("Reset WiFi");
+    gfx->setFont((const GFXfont*)nullptr);
+}
+
+// Compute button Y positions (must match render)
+static int wifi_buttons_y() {
+    bool connected = (WiFi.status() == WL_CONNECTED);
+    int row_y = TITLE_HEIGHT + 10;
+    row_y += 24;  // status line
+    if (connected) {
+        row_y += 14 + 22;  // SSID
+        row_y += 14 + 22;  // IP
+        row_y += 14 + 22;  // Gateway
+        row_y += 14 + 22;  // Signal
+        row_y += 14 + 30;  // MAC
+    }
+    row_y += 10;  // divider gap
+    return row_y;
+}
+
+bool settings_wifi_handle_touch(int x, int y, Arduino_GFX* gfx) {
+    int btn_start = wifi_buttons_y();
+    int btn_h = 44;
+
+    // AP Setup button
+    if (y >= btn_start && y < btn_start + btn_h) {
+        Serial.println("[Settings/WiFi] AP Setup tapped");
+        if (gfx) {
+            gfx->fillRoundRect(TH_CARD_MARGIN, btn_start, TH_CARD_W, btn_h,
+                                TH_CORNER_R, TH_CARD_HI);
+            gfx->setFont(&FreeSansBold10pt7b);
+            gfx->setTextColor(TH_TEXT);
+            gfx->setCursor(18, btn_start + btn_h / 2 + FONT_SANS_ASCENT / 2 - 1);
+            gfx->print("Starting...");
+            gfx->setFont((const GFXfont*)nullptr);
+        }
+        delay(300);
+        settings_wifi_start_portal();
+        settings_wifi_render(gfx);
+        return true;
+    }
+
+    // Reset WiFi button
+    int reset_y = btn_start + btn_h + 10;
+    if (y >= reset_y && y < reset_y + btn_h) {
+        Serial.println("[Settings/WiFi] Reset tapped");
+        if (gfx) {
+            gfx->fillRoundRect(TH_CARD_MARGIN, reset_y, TH_CARD_W, btn_h,
+                                TH_CORNER_R, TH_CARD_HI);
+            gfx->setFont(&FreeSansBold10pt7b);
+            gfx->setTextColor(TH_DANGER);
+            gfx->setCursor(18, reset_y + btn_h / 2 + FONT_SANS_ASCENT / 2 - 1);
+            gfx->print("Resetting...");
+            gfx->setFont((const GFXfont*)nullptr);
+        }
+        delay(500);
+        settings_wifi_reset();
+        return true;
+    }
+
+    return false;
+}
+
+// ------------------------------------------------------------------
+// Rendering: Devices page
 // ------------------------------------------------------------------
 
 static void draw_device_row(Arduino_GFX* gfx, int index, int y_top) {
@@ -262,16 +516,15 @@ static void draw_device_row(Arduino_GFX* gfx, int index, int y_top) {
     int card_y = y_top + 2;
     int card_h = DEVICE_ROW_HEIGHT - 4;
 
-    // Card background
     gfx->fillRoundRect(TH_CARD_MARGIN, card_y, TH_CARD_W, card_h,
                         TH_CORNER_R, TH_CARD);
 
-    // --- Left zone: device name + primary indicator ---
+    // Left zone: device name + primary indicator
     gfx->setTextSize(1);
     if (!_devices[index].valid) {
         gfx->setTextColor(TH_DIVIDER);
     } else if (is_primary) {
-        gfx->setTextColor(TH_PLAYING);  // GREEN
+        gfx->setTextColor(TH_PLAYING);
     } else {
         gfx->setTextColor(TH_TEXT);
     }
@@ -288,16 +541,11 @@ static void draw_device_row(Arduino_GFX* gfx, int index, int y_top) {
     }
     gfx->print(trunc_name);
 
-    // IP address below name
     gfx->setTextColor(_devices[index].valid ? TH_TEXT_SEC : TH_DIVIDER);
     gfx->setCursor(10, card_y + 38);
-    if (_devices[index].valid) {
-        gfx->print(_devices[index].ip);
-    } else {
-        gfx->print("(no IP)");
-    }
+    gfx->print(_devices[index].valid ? _devices[index].ip : "(no IP)");
 
-    // --- Right zone: group toggle indicator ---
+    // Right zone: group toggle
     if (_devices[index].valid && !is_primary) {
         gfx->setFont(&FreeSansBold10pt7b);
         gfx->setTextSize(1);
@@ -306,90 +554,66 @@ static void draw_device_row(Arduino_GFX* gfx, int index, int y_top) {
         gfx->print("G");
         gfx->setFont((const GFXfont*)nullptr);
 
-        // Vertical divider between zones
         gfx->drawFastVLine(SELECT_ZONE_W, card_y + 6, card_h - 12, TH_DIVIDER);
     }
 }
 
-void settings_render(Arduino_GFX* gfx) {
+void settings_devices_render(Arduino_GFX* gfx) {
     if (!gfx) return;
 
-    // Clear main area
     gfx->fillRect(0, 0, TH_DISPLAY_W, SETTINGS_AREA_BOTTOM, TH_BG);
 
-    // Title (FreeSansBold)
+    // Title
     gfx->setFont(&FreeSansBold10pt7b);
     gfx->setTextSize(1);
     gfx->setTextColor(TH_ACCENT);
     gfx->setCursor(36, FONT_SANS_ASCENT + 8);
-    gfx->print("SETTINGS");
+    gfx->print("DEVICES");
     gfx->setFont((const GFXfont*)nullptr);
 
-    // Divider under title
     gfx->drawFastHLine(5, TITLE_HEIGHT - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
 
-    // Zoom row card
-    int zoom_card_y = TITLE_HEIGHT + 2;
-    int zoom_card_h = ZOOM_ROW_HEIGHT - 4;
-    gfx->fillRoundRect(TH_CARD_MARGIN, zoom_card_y, TH_CARD_W, zoom_card_h,
-                        TH_CORNER_R, TH_CARD);
-    gfx->setTextSize(1);
-    gfx->setTextColor(TH_TEXT);
-    gfx->setCursor(10, zoom_card_y + 16);
-    gfx->printf("Zoom: %dx", _saved_zoom);
-
-    // WiFi status row
-    int wifi_card_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + 2;
-    int wifi_card_h = WIFI_ROW_HEIGHT - 4;
-    bool wifi_connected = (WiFi.status() == WL_CONNECTED);
-    gfx->fillRoundRect(TH_CARD_MARGIN, wifi_card_y, TH_CARD_W, wifi_card_h,
-                        TH_CORNER_R, TH_CARD);
-    gfx->setTextSize(1);
-    gfx->setTextColor(wifi_connected ? TH_PLAYING : TH_DANGER);
-    gfx->setCursor(10, wifi_card_y + 16);
-    if (wifi_connected) {
-        gfx->printf("WiFi: %s", WiFi.localIP().toString().c_str());
-    } else {
-        gfx->print("WiFi: DISCONNECTED");
-    }
-
-    // Current device section (shifted down by zoom + wifi rows)
-    int dev_section_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + WIFI_ROW_HEIGHT;
+    // Current device info
+    int info_y = TITLE_HEIGHT + 5;
     gfx->setTextSize(1);
     gfx->setTextColor(TH_TEXT_SEC);
-    gfx->setCursor(5, dev_section_y + 5);
+    gfx->setCursor(10, info_y);
     gfx->print("Current device:");
+    info_y += 14;
 
     gfx->setTextColor(TH_PLAYING);
-    gfx->setCursor(5, dev_section_y + 18);
+    gfx->setCursor(10, info_y);
     if (_saved_name[0] != '\0') {
-        char trunc[28];
-        strncpy(trunc, _saved_name, 27);
-        trunc[27] = '\0';
+        char trunc[24];
+        strncpy(trunc, _saved_name, 23);
+        trunc[23] = '\0';
         gfx->print(trunc);
     } else {
         const char* ip = settings_get_wiim_ip();
-        if (ip[0] != '\0') {
-            gfx->print(ip);
-        } else {
-            gfx->print("(none)");
-        }
+        gfx->print(ip[0] != '\0' ? ip : "(none)");
     }
+    info_y += 14;
 
-    // Group member count
+    gfx->setTextColor(TH_TEXT_SEC);
+    gfx->setCursor(10, info_y);
+    const char* ip = settings_get_wiim_ip();
+    if (ip[0] != '\0') {
+        gfx->print(ip);
+    }
+    info_y += 14;
+
     if (_group_count > 0) {
         gfx->setTextColor(TH_ACCENT);
-        gfx->setCursor(5, dev_section_y + 38);
+        gfx->setCursor(10, info_y);
         gfx->printf("+ %d grouped", _group_count);
     }
 
-    // Divider under current device
-    int devices_start_y = dev_section_y + CURRENT_SECTION_HEIGHT;
+    // Divider
+    int devices_start_y = TITLE_HEIGHT + CURRENT_SECTION_HEIGHT + 20;
     gfx->drawFastHLine(5, devices_start_y - 1, TH_DISPLAY_W - 10, TH_DIVIDER);
 
     // Scanning state
     if (_scanning) {
-        gfx->setTextSize(1);
         gfx->setTextColor(TH_WARNING);
         gfx->setCursor(50, 250);
         gfx->print("Scanning...");
@@ -398,27 +622,22 @@ void settings_render(Arduino_GFX* gfx) {
 
     // Rescan button position
     int rescan_y = SETTINGS_AREA_BOTTOM - RESCAN_ROW_HEIGHT;
-
-    // Max devices that fit between current section and rescan button
     int max_visible = (rescan_y - devices_start_y) / DEVICE_ROW_HEIGHT;
 
     if (_device_count == 0) {
-        // No devices found
-        gfx->setTextSize(1);
         gfx->setTextColor(TH_TEXT_DIM);
         gfx->setCursor(15, devices_start_y + 40);
         gfx->print("No devices found");
         gfx->setCursor(15, devices_start_y + 65);
         gfx->print("Serial cmd: W:<ip>");
     } else {
-        // Draw discovered devices
         int visible = min(_device_count, max_visible);
         for (int i = 0; i < visible; i++) {
             draw_device_row(gfx, i, devices_start_y + i * DEVICE_ROW_HEIGHT);
         }
     }
 
-    // Rescan button (card style)
+    // Rescan button
     gfx->fillRoundRect(TH_CARD_MARGIN, rescan_y + 4, TH_CARD_W,
                         RESCAN_ROW_HEIGHT - 8, TH_CORNER_R, TH_CARD);
     gfx->drawRoundRect(TH_CARD_MARGIN, rescan_y + 4, TH_CARD_W,
@@ -431,35 +650,29 @@ void settings_render(Arduino_GFX* gfx) {
     gfx->setFont((const GFXfont*)nullptr);
 }
 
-// ------------------------------------------------------------------
-// Touch handling
-// ------------------------------------------------------------------
-
-bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
+bool settings_devices_handle_touch(int x, int y, Arduino_GFX* gfx) {
     if (_scanning) return false;
 
-    int devices_start_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT + WIFI_ROW_HEIGHT + CURRENT_SECTION_HEIGHT;
+    int devices_start_y = TITLE_HEIGHT + CURRENT_SECTION_HEIGHT + 20;
     int rescan_y = SETTINGS_AREA_BOTTOM - RESCAN_ROW_HEIGHT;
 
     // Rescan button
     if (y >= rescan_y && y < SETTINGS_AREA_BOTTOM) {
-        Serial.println("[Settings] Rescan tapped");
+        Serial.println("[Settings/Devices] Rescan tapped");
         if (gfx) {
             gfx->fillRoundRect(TH_CARD_MARGIN, rescan_y + 4, TH_CARD_W,
                                 RESCAN_ROW_HEIGHT - 8, TH_CORNER_R, TH_CARD_HI);
             gfx->setFont(&FreeSansBold10pt7b);
-            gfx->setTextSize(1);
             gfx->setTextColor(TH_TEXT);
             gfx->setCursor(48, rescan_y + RESCAN_ROW_HEIGHT / 2 + 3);
             gfx->print("RESCAN");
             gfx->setFont((const GFXfont*)nullptr);
             delay(80);
         }
-        // Show scanning state, scan, then show results
         _scanning = true;
-        settings_render(gfx);
+        settings_devices_render(gfx);
         settings_start_scan();
-        settings_render(gfx);
+        settings_devices_render(gfx);
         return true;
     }
 
@@ -468,9 +681,8 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
         int idx = (y - devices_start_y) / DEVICE_ROW_HEIGHT;
         int max_visible = (rescan_y - devices_start_y) / DEVICE_ROW_HEIGHT;
         if (idx >= 0 && idx < _device_count && idx < max_visible) {
-            // Skip invalid (unresolved) devices
             if (!_devices[idx].valid) {
-                Serial.printf("[Settings] %s has no IP - try rescan\n", _devices[idx].name);
+                Serial.printf("[Settings/Devices] %s has no IP\n", _devices[idx].name);
                 return false;
             }
 
@@ -481,38 +693,24 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
             int card_h = DEVICE_ROW_HEIGHT - 4;
 
             if (is_group_zone && !is_primary) {
-                // === GROUP TOGGLE ZONE ===
+                // Group toggle
                 bool currently_grouped = _devices[idx].grouped;
 
+                if (gfx) {
+                    gfx->fillRoundRect(SELECT_ZONE_W + 1, card_y,
+                                       TH_CARD_W - SELECT_ZONE_W + TH_CARD_MARGIN,
+                                       card_h, TH_CORNER_R, TH_CARD_HI);
+                    gfx->setTextSize(1);
+                    gfx->setTextColor(TH_TEXT);
+                    gfx->setCursor(SELECT_ZONE_W + 8, card_y + 25);
+                    gfx->print(currently_grouped ? "Leave" : "Join");
+                    delay(80);
+                }
+
+                _devices[idx].grouped = !currently_grouped;
                 if (currently_grouped) {
-                    Serial.printf("[Settings] Ungrouping: %s (%s)\n",
-                                 _devices[idx].name, _devices[idx].ip);
-                    if (gfx) {
-                        gfx->fillRoundRect(SELECT_ZONE_W + 1, card_y,
-                                           TH_CARD_W - SELECT_ZONE_W + TH_CARD_MARGIN,
-                                           card_h, TH_CORNER_R, TH_CARD_HI);
-                        gfx->setTextSize(1);
-                        gfx->setTextColor(TH_TEXT);
-                        gfx->setCursor(SELECT_ZONE_W + 8, card_y + 25);
-                        gfx->print("Leave");
-                        delay(80);
-                    }
-                    _devices[idx].grouped = false;
                     remove_group_ip(_devices[idx].ip);
                 } else {
-                    Serial.printf("[Settings] Grouping: %s (%s)\n",
-                                 _devices[idx].name, _devices[idx].ip);
-                    if (gfx) {
-                        gfx->fillRoundRect(SELECT_ZONE_W + 1, card_y,
-                                           TH_CARD_W - SELECT_ZONE_W + TH_CARD_MARGIN,
-                                           card_h, TH_CORNER_R, TH_CARD_HI);
-                        gfx->setTextSize(1);
-                        gfx->setTextColor(TH_TEXT);
-                        gfx->setCursor(SELECT_ZONE_W + 10, card_y + 25);
-                        gfx->print("Join");
-                        delay(80);
-                    }
-                    _devices[idx].grouped = true;
                     add_group_ip(_devices[idx].ip);
                 }
 
@@ -520,12 +718,12 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
                 if (_group_cb) {
                     _group_cb(_devices[idx].ip, !currently_grouped);
                 }
-                settings_render(gfx);
+                settings_devices_render(gfx);
                 return true;
 
             } else {
-                // === SELECT PRIMARY ZONE ===
-                Serial.printf("[Settings] Selected: %s (%s)\n",
+                // Select primary
+                Serial.printf("[Settings/Devices] Selected: %s (%s)\n",
                              _devices[idx].name, _devices[idx].ip);
 
                 if (gfx) {
@@ -542,7 +740,6 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
                     delay(80);
                 }
 
-                // If primary is actually changing, remove new primary from group
                 if (strcmp(_saved_ip, _devices[idx].ip) != 0) {
                     remove_group_ip(_devices[idx].ip);
                 }
@@ -558,88 +755,71 @@ bool settings_handle_touch(int x, int y, Arduino_GFX* gfx) {
                     _device_cb(_saved_ip, _saved_name);
                 }
 
-                settings_render(gfx);
+                settings_devices_render(gfx);
                 return true;
             }
         }
     }
 
-    // WiFi row
-    int wifi_y = TITLE_HEIGHT + ZOOM_ROW_HEIGHT;
-    if (y >= wifi_y && y < wifi_y + WIFI_ROW_HEIGHT) {
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("[Settings] WiFi reconnect tapped");
-            // Visual feedback
-            if (gfx) {
-                int wifi_card_y = wifi_y + 2;
-                int wifi_card_h = WIFI_ROW_HEIGHT - 4;
-                gfx->fillRoundRect(TH_CARD_MARGIN, wifi_card_y, TH_CARD_W, wifi_card_h,
-                                    TH_CORNER_R, TH_CARD_HI);
-                gfx->setTextSize(1);
-                gfx->setTextColor(TH_WARNING);
-                gfx->setCursor(10, wifi_card_y + 16);
-                gfx->print("Reconnecting...");
-            }
-            WiFi.reconnect();
-            // Wait up to 5 seconds
-            int attempts = 0;
-            while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-                delay(500);
-                attempts++;
-            }
-            if (WiFi.status() == WL_CONNECTED) {
-                Serial.printf("[WiFi] Reconnected: %s\n", WiFi.localIP().toString().c_str());
-            } else {
-                Serial.println("[WiFi] Reconnect failed");
-            }
-            settings_render(gfx);
-        }
-        return true;
-    }
-
-    // Zoom row (between title and wifi row)
-    int zoom_y = TITLE_HEIGHT;
-    if (y >= zoom_y && y < zoom_y + ZOOM_ROW_HEIGHT) {
-        // Cycle zoom: 1 -> 2 -> 3 -> 4 -> 5 -> 1
-        int new_zoom = (_saved_zoom % 5) + 1;
-
-        // Validate zoom files exist before allowing >1x
-        if (new_zoom > 1) {
-            char path[24];
-            snprintf(path, sizeof(path), "/maps/zoom%d.bin", new_zoom);
-            if (!LittleFS.exists(path)) {
-                Serial.printf("[Settings] Zoom %dx file missing: %s\n", new_zoom, path);
-                // Try remaining levels, then fall back to 1
-                bool found = false;
-                for (int try_z = new_zoom + 1; try_z <= 5; try_z++) {
-                    snprintf(path, sizeof(path), "/maps/zoom%d.bin", try_z);
-                    if (LittleFS.exists(path)) { new_zoom = try_z; found = true; break; }
-                }
-                if (!found) new_zoom = 1;
-            }
-        }
-
-        _saved_zoom = new_zoom;
-        save_to_file();
-        Serial.printf("[Settings] Zoom set to %dx\n", _saved_zoom);
-
-        if (gfx) {
-            int zoom_card_y = TITLE_HEIGHT + 2;
-            int zoom_card_h = ZOOM_ROW_HEIGHT - 4;
-            gfx->fillRoundRect(TH_CARD_MARGIN, zoom_card_y, TH_CARD_W, zoom_card_h,
-                                TH_CORNER_R, TH_CARD_HI);
-            gfx->setTextSize(1);
-            gfx->setTextColor(TH_TEXT);
-            gfx->setCursor(10, zoom_card_y + 16);
-            gfx->printf("Zoom: %dx", _saved_zoom);
-            delay(80);
-        }
-
-        settings_render(gfx);
-        return true;
-    }
-
     return false;
+}
+
+// ------------------------------------------------------------------
+// WiFi management
+// ------------------------------------------------------------------
+
+void settings_wifi_reset() {
+    Serial.println("[Settings] Clearing WiFi credentials and restarting...");
+    wm.resetSettings();
+    delay(500);
+    ESP.restart();
+}
+
+void settings_wifi_start_portal() {
+    Serial.println("[Settings] Starting captive portal (button to cancel)...");
+    display_show_wifi_portal(true);  // Show cancel instructions
+
+    wm.setConfigPortalBlocking(false);
+    wm.startConfigPortal("RadioWall");
+
+    // Non-blocking loop: check portal + button cancel
+    while (true) {
+        wm.process();
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.printf("[WiFi] Connected via portal: %s\n",
+                          WiFi.localIP().toString().c_str());
+            break;
+        }
+        if (digitalRead(0) == LOW) {
+            delay(300);  // Debounce
+            Serial.println("[WiFi] Portal cancelled by button press");
+            break;
+        }
+        delay(10);
+    }
+
+    wm.stopConfigPortal();
+    // Caller re-renders settings screen
+}
+
+// ------------------------------------------------------------------
+// Power Off (deep sleep)
+// ------------------------------------------------------------------
+
+void settings_power_off() {
+    Serial.println("[Settings] Entering deep sleep (press button to wake)...");
+    Serial.flush();
+
+    // Turn off display backlight
+    pinMode(1, OUTPUT);
+    digitalWrite(1, LOW);
+
+    // Configure GPIO 0 (button) as wakeup source (active LOW)
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+
+    delay(100);
+    esp_deep_sleep_start();
+    // Never reaches here — ESP32 resets on wake
 }
 
 // ------------------------------------------------------------------

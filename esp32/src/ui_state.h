@@ -16,7 +16,9 @@ enum ViewMode {
     VIEW_VOLUME,
     VIEW_FAVORITES,
     VIEW_HISTORY,
-    VIEW_SETTINGS
+    VIEW_SETTINGS,        // Settings sub-menu (WiFi / Devices)
+    VIEW_SETTINGS_WIFI,   // WiFi info page
+    VIEW_SETTINGS_DEVICES // Device discovery page
 };
 
 // Vertical map slice definition (longitude-based)
