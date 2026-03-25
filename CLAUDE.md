@@ -84,14 +84,48 @@ RadioWall is an interactive physical world map that plays local radio stations w
 | Favorites → ADD | Save currently playing station |
 | History → CLEAR | Wipe all playback history |
 
-### TODO: Prototype 2 (External Touch Panel)
+### ✅ COMPLETED: Prototype 2 (External Touch Panel)
 
-- [ ] Test USB-C OTG adapter when it arrives
-- [ ] Implement USB Host HID in `usb_touch.cpp` (inspect HID descriptor, parse reports)
-- [ ] Build calibration tool (touch 4 corners → calculate transform matrix)
-- [ ] Test with 9" touch panel over a printed map
-- [ ] Simplify ESP32 display to "Now Playing" only (remove map rendering)
-- [ ] Add `USE_BUILTIN_TOUCH 0` mode that skips map UI
+- [x] USB Host HID in `usb_touch.cpp` — 55" IR frame (VID:1FF7, EP 0x83, 8-byte reports)
+- [x] `USE_BUILTIN_TOUCH 0` mode with USB touch panel
+- [x] PMU OTG 5V boost for USB Host power
+- [x] UDP WiFi logging (Serial unavailable in USB Host mode)
+- [x] Control zone: Antarctica strip (y>550) = play/pause toggle
+- [x] Tiled map generator (`tools/generate_tiled_map.py`) for tracing onto glass
+
+### TODO: Prototype 3 (E-Ink + IR Touch Frame)
+
+**Hardware:** Heltec Vision Master E213 (ESP32-S3, 2.13" E-Ink 250×122) + 55" IR touch frame
+
+**Display & Integration:**
+- [ ] Integrate E-Ink display with radio/touch/linkplay firmware
+- [ ] Design "Now Playing" layout for 250×122 (station, city, status)
+- [ ] Show loading/error states on E-Ink
+
+**Touch Zone Controls (on IR frame):**
+- [ ] Define control zones: stop, next, volume up/down, favorites
+- [ ] Ocean areas as button zones (Atlantic, Pacific dead space)
+- [ ] Antarctica strip: play/pause (already started)
+
+**Power Management:**
+- [ ] Measure IR touch frame power draw (SY6970 I2C registers or USB meter)
+- [ ] Sleep mode: timeout → disable OTG (kill touch frame 5V) → ESP32 deep sleep
+- [ ] Wake on GPIO 21 button press → re-enable OTG → reconnect touch panel
+- [ ] Solve single USB-C port (charge vs OTG touch panel):
+  - Wall power via battery connector (SH1.25) + TP4056 charger module
+  - Or powered USB hub
+  - Long-term: wall-mounted frame with permanent power
+
+**Configuration (Web Portal via WiFi AP):**
+- [ ] WiFi credentials (already working via WiFiManager)
+- [ ] LinkPlay/WiiM device selection
+- [ ] Favorites management
+- [ ] Touch zone calibration
+
+**Button (GPIO 21):**
+- [ ] Wake from deep sleep
+- [ ] Short press: next station
+- [ ] Long press: stop / toggle menu
 
 ### ✅ COMPLETED: Standalone Mode (No Server)
 
@@ -118,12 +152,10 @@ The ESP32 now works completely standalone — no server required!
 
 ### TODO: Production (Phase 5)
 
-- [ ] Source large PCAP touch foil (55"+)
+- [x] ~~Source large touch panel (55"+)~~ → 55" IR touch frame (VID:1FF7)
 - [ ] Design frame with hidden electronics compartment
-- [ ] High-quality equirectangular map print
-- [ ] Power solution (USB wall adapter or LiPo with charging)
-
-**Waiting for**: USB-C OTG adapter + breakout board (ordered).
+- [ ] High-quality equirectangular map print (or whiteboard marker on glass)
+- [ ] Permanent power solution (wall adapter → TP4056 → battery connector)
 
 ---
 
