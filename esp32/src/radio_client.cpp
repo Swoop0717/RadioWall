@@ -5,6 +5,7 @@
 #include "radio_client.h"
 #include "places_db.h"
 #include "linkplay_client.h"
+#include "udp_log.h"
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 
@@ -36,11 +37,14 @@ static String https_get(const char* path) {
     client.setInsecure();  // Radio.garden uses valid cert, but skip verification for simplicity
 
     Serial.printf("[Radio] GET https://%s%s\n", RADIO_GARDEN_HOST, path);
+    udp_logf("[Radio] Connecting to %s...", RADIO_GARDEN_HOST);
 
     if (!client.connect(RADIO_GARDEN_HOST, 443, 10000)) {
         Serial.println("[Radio] Connection failed");
+        udp_log("[Radio] Connection FAILED");
         return "";
     }
+    udp_log("[Radio] Connected, sending request...");
 
     // Send request - use HTTP/1.0 to avoid chunked encoding
     client.printf("GET %s HTTP/1.0\r\n", path);
@@ -172,12 +176,15 @@ static bool fetch_and_play_place(const Place* place) {
 
     // Fetch stations for this place
     String path = "/api/ara/content/page/" + _current_place_id + "/channels";
+    udp_logf("[Radio] Fetching stations: %s", path.c_str());
     String response = https_get(path.c_str());
 
     if (response.length() == 0) {
         Serial.println("[Radio] Failed to fetch stations");
+        udp_log("[Radio] HTTPS fetch failed (empty response)");
         return false;
     }
+    udp_logf("[Radio] Response: %d bytes", response.length());
 
     // Parse JSON response
     DynamicJsonDocument doc(16384);
@@ -218,9 +225,11 @@ static bool fetch_and_play_place(const Place* place) {
 
     if (_total_stations == 0) {
         Serial.println("[Radio] 0 stations found for this place");
+        udp_log("[Radio] 0 stations found");
         return false;
     }
     Serial.printf("[Radio] %d stations available\n", _total_stations);
+    udp_logf("[Radio] %d stations available", _total_stations);
 
     // Play first station
     _current_station_index = 0;
@@ -229,10 +238,13 @@ static bool fetch_and_play_place(const Place* place) {
 
 bool radio_play_at_location(float lat, float lon) {
     // Find nearest place
+    udp_logf("[Radio] Looking up lat=%.2f, lon=%.2f", lat, lon);
     const Place* place = places_db_find_nearest(lat, lon);
     if (!place) {
+        udp_log("[Radio] No nearest place found (places.bin loaded?)");
         return false;
     }
+    udp_logf("[Radio] Nearest: %s, %s", place->name, place->country);
 
     // Store touch origin for next-city hopping
     _touch_origin_lat = lat;

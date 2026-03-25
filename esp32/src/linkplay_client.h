@@ -28,6 +28,9 @@ bool linkplay_pause();
 // Resume playback
 bool linkplay_resume();
 
+// Toggle pause/resume
+bool linkplay_toggle_pause();
+
 // Set volume (0-100)
 bool linkplay_set_volume(int volume);
 

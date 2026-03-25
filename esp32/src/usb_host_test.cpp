@@ -216,9 +216,11 @@ static volatile uint8_t _new_dev_addr = 0;
 static volatile bool _dev_gone = false;
 static usb_device_handle_t _dev_hdl = nullptr;
 
-// Endpoint for interrupt IN transfers (HID reports)
-static usb_transfer_t *_xfer = nullptr;
-static uint8_t _ep_addr = 0;
+// Support up to 2 interrupt IN endpoints (one per HID interface)
+#define MAX_EP 2
+static usb_transfer_t *_xfer[MAX_EP] = {};
+static uint8_t _ep_addr[MAX_EP] = {};
+static int _num_eps = 0;
 static bool _reading_reports = false;
 
 static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg) {
@@ -250,6 +252,9 @@ static void xfer_callback(usb_transfer_t *transfer) {
         int len = transfer->actual_num_bytes;
         _report_num++;
 
+        // Identify which endpoint this came from
+        uint8_t ep = transfer->bEndpointAddress;
+
         // Build hex string
         char hex[256];
         int pos = 0;
@@ -259,15 +264,22 @@ static void xfer_callback(usb_transfer_t *transfer) {
 
         // Show abbreviated version on display
         char display_line[64];
-        snprintf(display_line, sizeof(display_line), "#%lu %dB: %.48s",
-                 _report_num, len, hex);
+        snprintf(display_line, sizeof(display_line), "#%lu EP%02X %dB: %.40s",
+                 _report_num, ep, len, hex);
         dlog(display_line, CYAN);
 
-        // Send full report over UDP with report number and length
+        // Send full report over UDP
         char udp_line[300];
-        snprintf(udp_line, sizeof(udp_line), "#%lu len=%d: %s",
-                 _report_num, len, hex);
+        snprintf(udp_line, sizeof(udp_line), "#%lu EP=0x%02X len=%d: %s",
+                 _report_num, ep, len, hex);
         udp_send(udp_line);
+    } else if (transfer->status != USB_TRANSFER_STATUS_COMPLETED) {
+        char _b[64];
+        snprintf(_b, sizeof(_b), "Xfer error: EP=0x%02X status=%d",
+                 transfer->bEndpointAddress, transfer->status);
+        udp_send(_b);
+        dlog(_b, RED);
+        delay(1000);
     }
 
     // Resubmit transfer to keep reading
@@ -276,61 +288,60 @@ static void xfer_callback(usb_transfer_t *transfer) {
     }
 }
 
-// Find and claim a HID interrupt IN endpoint
-static bool setup_hid_endpoint(const usb_config_desc_t *config_desc) {
+// Find and claim ALL HID interrupt IN endpoints
+static bool setup_hid_endpoints(const usb_config_desc_t *config_desc) {
     int offset = 0;
     const uint8_t *p = (const uint8_t *)config_desc;
     int total_len = config_desc->wTotalLength;
-
-    // Walk through all descriptors looking for HID interface + interrupt IN endpoint
     bool in_hid_interface = false;
+    _num_eps = 0;
 
-    while (offset < total_len) {
+    while (offset < total_len && _num_eps < MAX_EP) {
         uint8_t desc_len = p[offset];
         uint8_t desc_type = p[offset + 1];
 
         if (desc_len == 0) break;
 
         if (desc_type == USB_B_DESCRIPTOR_TYPE_INTERFACE) {
-            // Interface descriptor
             uint8_t iface_class = p[offset + 5];
             uint8_t iface_num = p[offset + 2];
-            in_hid_interface = (iface_class == 0x03);  // HID class
+            in_hid_interface = (iface_class == 0x03);
 
             if (in_hid_interface) {
                 dlogf(YELLOW, "HID iface #%d found", iface_num);
+                { char _b[64]; snprintf(_b, sizeof(_b), "HID iface #%d found", iface_num); udp_send(_b); }
 
-                // Claim this interface
                 esp_err_t err = usb_host_interface_claim(_client, _dev_hdl, iface_num, 0);
                 if (err != ESP_OK) {
-                    dlogf(RED, "Claim fail: %d", err);
+                    dlogf(RED, "Claim iface #%d fail: %d", iface_num, err);
+                    { char _b[64]; snprintf(_b, sizeof(_b), "Claim iface #%d fail: %d", iface_num, err); udp_send(_b); }
                     in_hid_interface = false;
                 } else {
-                    dlog("Interface claimed", GREEN);
+                    dlogf(GREEN, "Iface #%d claimed", iface_num);
+                    { char _b[64]; snprintf(_b, sizeof(_b), "Iface #%d claimed", iface_num); udp_send(_b); }
                 }
             }
         }
 
         if (desc_type == USB_B_DESCRIPTOR_TYPE_ENDPOINT && in_hid_interface) {
-            // Endpoint descriptor
             uint8_t ep_addr = p[offset + 2];
             uint8_t ep_attr = p[offset + 3];
             uint16_t ep_mps = p[offset + 4] | (p[offset + 5] << 8);
 
-            // Check for interrupt IN endpoint
             if ((ep_addr & 0x80) && (ep_attr & 0x03) == 0x03) {
                 dlogf(GREEN, "INT IN EP: 0x%02X mps=%d", ep_addr, ep_mps);
-                _ep_addr = ep_addr;
+                { char _b[64]; snprintf(_b, sizeof(_b), "INT IN EP: 0x%02X mps=%d", ep_addr, ep_mps); udp_send(_b); }
 
-                // Allocate transfer
-                usb_host_transfer_alloc(ep_mps + 1, 0, &_xfer);
-                if (_xfer) {
-                    _xfer->device_handle = _dev_hdl;
-                    _xfer->bEndpointAddress = ep_addr;
-                    _xfer->callback = xfer_callback;
-                    _xfer->context = NULL;
-                    _xfer->num_bytes = ep_mps;
-                    return true;
+                int idx = _num_eps;
+                usb_host_transfer_alloc(ep_mps + 1, 0, &_xfer[idx]);
+                if (_xfer[idx]) {
+                    _xfer[idx]->device_handle = _dev_hdl;
+                    _xfer[idx]->bEndpointAddress = ep_addr;
+                    _xfer[idx]->callback = xfer_callback;
+                    _xfer[idx]->context = NULL;
+                    _xfer[idx]->num_bytes = ep_mps;
+                    _ep_addr[idx] = ep_addr;
+                    _num_eps++;
                 }
             }
         }
@@ -338,7 +349,8 @@ static bool setup_hid_endpoint(const usb_config_desc_t *config_desc) {
         offset += desc_len;
     }
 
-    return false;
+    { char _b[64]; snprintf(_b, sizeof(_b), "Total IN endpoints found: %d", _num_eps); udp_send(_b); }
+    return _num_eps > 0;
 }
 
 static void handle_new_device() {
@@ -412,20 +424,33 @@ static void handle_new_device() {
     dlog("", WHITE);
     dlog("Looking for HID EP...", YELLOW);
 
-    if (setup_hid_endpoint(config_desc)) {
-        dlog("Starting reports...", GREEN);
+    udp_send("Looking for HID EPs...");
+    if (setup_hid_endpoints(config_desc)) {
+        dlogf(GREEN, "Listening on %d EPs", _num_eps);
+        udp_send("Starting reports on all EPs...");
         _reading_reports = true;
-        err = usb_host_transfer_submit(_xfer);
-        if (err != ESP_OK) {
-            dlogf(RED, "Submit fail: %d", err);
-            _reading_reports = false;
-        } else {
+        bool any_ok = false;
+        for (int i = 0; i < _num_eps; i++) {
+            err = usb_host_transfer_submit(_xfer[i]);
+            if (err != ESP_OK) {
+                dlogf(RED, "Submit EP 0x%02X fail: %d", _ep_addr[i], err);
+                { char _b[64]; snprintf(_b, sizeof(_b), "Submit EP 0x%02X fail: %d", _ep_addr[i], err); udp_send(_b); }
+            } else {
+                dlogf(GREEN, "EP 0x%02X listening", _ep_addr[i]);
+                { char _b[64]; snprintf(_b, sizeof(_b), "EP 0x%02X listening", _ep_addr[i]); udp_send(_b); }
+                any_ok = true;
+            }
+        }
+        if (any_ok) {
             dlog("", WHITE);
             dlog("=== TOUCH THE PANEL ===", GREEN);
-            dlog("Raw HID reports below:", WHITE);
+            udp_send("=== TOUCH THE PANEL ===");
+        } else {
+            _reading_reports = false;
         }
     } else {
         dlog("No HID INT IN found", RED);
+        udp_send("No HID INT IN found!");
     }
 }
 
@@ -434,10 +459,13 @@ static void handle_device_gone() {
     _reading_reports = false;
     dlog("Device disconnected", RED);
 
-    if (_xfer) {
-        usb_host_transfer_free(_xfer);
-        _xfer = nullptr;
+    for (int i = 0; i < _num_eps; i++) {
+        if (_xfer[i]) {
+            usb_host_transfer_free(_xfer[i]);
+            _xfer[i] = nullptr;
+        }
     }
+    _num_eps = 0;
     if (_dev_hdl) {
         usb_host_device_close(_client, _dev_hdl);
         _dev_hdl = nullptr;

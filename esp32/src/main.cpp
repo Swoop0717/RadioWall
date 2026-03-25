@@ -116,8 +116,28 @@ static bool resume_playback() {
 // Callbacks
 // ------------------------------------------------------------------
 
+static volatile bool _loading = false;
+
+// Control zone: bottom strip of map (Antarctica region, y > 550 out of 600)
+// Tap here for play/pause instead of station lookup
+#define CONTROL_ZONE_Y 550
+
 static void on_map_touch(int server_x, int server_y) {
     display_wake();
+
+    // Bottom strip = control zone (play/pause toggle)
+    if (server_y > CONTROL_ZONE_Y) {
+        udp_logf("[Main] Control zone tap at (%d,%d) — toggle pause", server_x, server_y);
+        linkplay_toggle_pause();
+        return;
+    }
+
+    // Ignore touches while a station is loading (HTTPS calls are blocking)
+    if (_loading) {
+        udp_log("[Main] Touch ignored — still loading");
+        return;
+    }
+    _loading = true;
 
     // Show loading feedback in status bar
     ui_state.set_status_text("Loading...");
@@ -128,10 +148,12 @@ static void on_map_touch(int server_x, int server_y) {
     float lat = 90.0f - (server_y / 600.0f) * 180.0f;
 
     Serial.printf("[Main] Touch -> lat=%.2f, lon=%.2f\n", lat, lon);
+    udp_logf("[Main] Touch -> lat=%.2f, lon=%.2f (server %d,%d)", lat, lon, server_x, server_y);
 
     if (radio_play_at_location(lat, lon)) {
         const StationInfo* station = radio_get_current();
         if (station) {
+            udp_logf("[Main] Playing: %s @ %s", station->title, station->place);
             ui_state.set_playing(station->title, station->place);
             ui_state.set_marker(station->lat, station->lon);
             save_playback_state();
@@ -140,9 +162,12 @@ static void on_map_touch(int server_x, int server_y) {
             display_update_status_bar(&ui_state);
         }
     } else {
+        udp_log("[Main] No stations found");
         ui_state.set_status_text("No stations found");
         display_update_status_bar(&ui_state);
     }
+
+    _loading = false;
 }
 
 // ------------------------------------------------------------------
@@ -774,16 +799,17 @@ void setup() {
         usb_touch_set_ui_state(&ui_state);
     #endif
 
+    // Show map first — don't block on network calls
+    display_show_map_view(&ui_state);
+    udp_log("[Main] Display ready");
+
     // Resume previous playback or stop stale WiiM playback
+    // (may take a few seconds if WiiM is unreachable)
     if (!resume_playback()) {
-        // No saved state - stop WiiM in case it's still playing from last session
         linkplay_stop();
     }
 
-    // Show map (will show playing state if resumed)
-    display_show_map_view(&ui_state);
-
-    Serial.printf("[Main] Ready - Region: %s\n", ui_state.get_current_slice().name);
+    udp_logf("[Main] Ready - Region: %s", ui_state.get_current_slice().name);
 }
 
 // ------------------------------------------------------------------

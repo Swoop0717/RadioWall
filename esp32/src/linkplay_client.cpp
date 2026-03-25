@@ -112,6 +112,11 @@ bool linkplay_resume() {
     return response == "OK";
 }
 
+bool linkplay_toggle_pause() {
+    String response = make_request("setPlayerCmd:onepause");
+    return response == "OK";
+}
+
 bool linkplay_set_sleep_timer(int minutes) {
     String command = "setSleepTimer:" + String(minutes * 60);
     String response = make_request(command.c_str());

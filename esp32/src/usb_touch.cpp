@@ -1,19 +1,21 @@
 /**
  * USB Host HID touch panel driver for RadioWall Prototype 2.
  *
- * Reads touch coordinates from a USB capacitive touch panel connected
- * via USB-C OTG adapter. The panel reports as a standard HID digitizer.
+ * Reads touch coordinates from a USB IR touch frame connected
+ * via USB-C OTG adapter. The frame reports as HID with two interfaces.
  *
- * Report format (52 bytes):
- *   Byte 0:    0x15 (report ID)
- *   Byte 1:    0x40 = finger down, 0x00 = finger up (bit 6)
- *   Byte 2-3:  X coordinate (uint16 little-endian, 0-1023)
- *   Byte 4-5:  Y coordinate (uint16 little-endian, 0-599)
- *   Byte 6-50: Additional touch points (zeros for single touch)
- *   Byte 51:   Contact count (0x01)
+ * Device: VID:1FF7 PID:0013 (55" IR touch frame)
+ * Active endpoint: EP 0x83 (interface 1), 8-byte reports
  *
- * The touch panel sits over the physical map, so coordinates map directly
- * to the 1024x600 equirectangular world projection.
+ * Report format (8 bytes on EP 0x83):
+ *   Byte 0:    0x01 (report ID)
+ *   Byte 1:    0x01 = finger down, 0x00 = finger up
+ *   Byte 2-3:  X coordinate (uint16 little-endian, 0-32767)
+ *   Byte 4-5:  Y coordinate (uint16 little-endian, 0-32767)
+ *   Byte 6-7:  0x00 (padding)
+ *
+ * Both HID interfaces are claimed; touch data arrives on interface 1.
+ * Coordinates are scaled to 1024x600 equirectangular world projection.
  */
 
 #include "usb_touch.h"
@@ -27,9 +29,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// Touch panel coordinate range
-#define TOUCH_PANEL_MAX_X 1023
-#define TOUCH_PANEL_MAX_Y 599
+// IR touch frame coordinate range (raw HID values)
+// Scaled to 1024x600 equirectangular map space
+#define TOUCH_RAW_MAX_X 32767
+#define TOUCH_RAW_MAX_Y 32767
+#define MAP_WIDTH 1024
+#define MAP_HEIGHT 600
 
 // Debounce: ignore rapid re-triggers
 #define USB_TOUCH_DEBOUNCE_MS 300
@@ -103,9 +108,13 @@ static usb_host_client_handle_t _client = nullptr;
 static volatile uint8_t _new_dev_addr = 0;
 static volatile bool _dev_gone = false;
 static usb_device_handle_t _dev_hdl = nullptr;
-static usb_transfer_t *_xfer = nullptr;
 static bool _reading_reports = false;
 static bool _usb_initialized = false;
+
+// Support up to 2 HID interrupt IN endpoints
+#define MAX_EP 2
+static usb_transfer_t *_xfer[MAX_EP] = {};
+static int _num_eps = 0;
 
 // ---------------------------------------------------------------
 // Touch state
@@ -148,26 +157,35 @@ static void usb_lib_task(void *arg) {
 // Touch event processing
 // ---------------------------------------------------------------
 
-static void fire_tap(uint16_t x, uint16_t y) {
+static void fire_tap(uint16_t raw_x, uint16_t raw_y) {
     unsigned long now = millis();
     if (now - _last_fire_ms < USB_TOUCH_DEBOUNCE_MS) return;
     _last_fire_ms = now;
 
-    udp_logf("[USBTouch] Tap at (%d, %d)", x, y);
+    // Scale from IR frame coordinates to 1024x600 map space
+    int x = (int)((uint32_t)raw_x * MAP_WIDTH / TOUCH_RAW_MAX_X);
+    int y = (int)((uint32_t)raw_y * MAP_HEIGHT / TOUCH_RAW_MAX_Y);
+    if (x >= MAP_WIDTH) x = MAP_WIDTH - 1;
+    if (y >= MAP_HEIGHT) y = MAP_HEIGHT - 1;
 
-    // The USB touch panel covers the physical map.
-    // Coordinates are already in ~1024x600 equirectangular space.
+    udp_logf("[USBTouch] Tap raw(%d,%d) -> map(%d,%d)", raw_x, raw_y, x, y);
+
     if (_map_cb) {
         _map_cb(x, y);
     }
 }
 
-static void fire_double_tap(uint16_t x, uint16_t y) {
-    udp_logf("[USBTouch] Double-tap at (%d, %d)", x, y);
+static void fire_double_tap(uint16_t raw_x, uint16_t raw_y) {
     _last_fire_ms = millis();
 
-    // TODO: Double-tap zoom not meaningful on physical map (no display zoom).
-    // Reserved for future use. For now, treat as regular tap.
+    int x = (int)((uint32_t)raw_x * MAP_WIDTH / TOUCH_RAW_MAX_X);
+    int y = (int)((uint32_t)raw_y * MAP_HEIGHT / TOUCH_RAW_MAX_Y);
+    if (x >= MAP_WIDTH) x = MAP_WIDTH - 1;
+    if (y >= MAP_HEIGHT) y = MAP_HEIGHT - 1;
+
+    udp_logf("[USBTouch] Double-tap raw(%d,%d) -> map(%d,%d)", raw_x, raw_y, x, y);
+
+    // Double-tap on physical map: treat as regular tap for now
     if (_map_cb) {
         _map_cb(x, y);
     }
@@ -208,8 +226,10 @@ static void xfer_callback(usb_transfer_t *transfer) {
     if (transfer->status == USB_TRANSFER_STATUS_COMPLETED && transfer->actual_num_bytes >= 6) {
         uint8_t *d = transfer->data_buffer;
 
-        // Parse report: byte 1 bit 6 = touch state, bytes 2-5 = X,Y (LE uint16)
-        bool down = (d[1] & 0x40) != 0;
+        // IR frame report (8 bytes on EP 0x83):
+        // Byte 1: 0x01 = down, 0x00 = up
+        // Bytes 2-3: X (LE uint16), Bytes 4-5: Y (LE uint16)
+        bool down = (d[1] == 0x01);
         uint16_t x = d[2] | (d[3] << 8);
         uint16_t y = d[4] | (d[5] << 8);
 
@@ -226,13 +246,14 @@ static void xfer_callback(usb_transfer_t *transfer) {
 // USB device enumeration
 // ---------------------------------------------------------------
 
-static bool setup_hid_endpoint(const usb_config_desc_t *config_desc) {
+static bool setup_hid_endpoints(const usb_config_desc_t *config_desc) {
     int offset = 0;
     const uint8_t *p = (const uint8_t *)config_desc;
     int total_len = config_desc->wTotalLength;
     bool in_hid = false;
+    _num_eps = 0;
 
-    while (offset < total_len) {
+    while (offset < total_len && _num_eps < MAX_EP) {
         uint8_t desc_len = p[offset];
         uint8_t desc_type = p[offset + 1];
         if (desc_len == 0) break;
@@ -261,21 +282,22 @@ static bool setup_hid_endpoint(const usb_config_desc_t *config_desc) {
             if ((ep_addr & 0x80) && (ep_attr & 0x03) == 0x03) {
                 udp_logf("[USBTouch] INT IN EP 0x%02X mps=%d", ep_addr, ep_mps);
 
-                usb_host_transfer_alloc(ep_mps + 1, 0, &_xfer);
-                if (_xfer) {
-                    _xfer->device_handle = _dev_hdl;
-                    _xfer->bEndpointAddress = ep_addr;
-                    _xfer->callback = xfer_callback;
-                    _xfer->context = NULL;
-                    _xfer->num_bytes = ep_mps;
-                    return true;
+                int idx = _num_eps;
+                usb_host_transfer_alloc(ep_mps + 1, 0, &_xfer[idx]);
+                if (_xfer[idx]) {
+                    _xfer[idx]->device_handle = _dev_hdl;
+                    _xfer[idx]->bEndpointAddress = ep_addr;
+                    _xfer[idx]->callback = xfer_callback;
+                    _xfer[idx]->context = NULL;
+                    _xfer[idx]->num_bytes = ep_mps;
+                    _num_eps++;
                 }
             }
         }
 
         offset += desc_len;
     }
-    return false;
+    return _num_eps > 0;
 }
 
 static void handle_new_device() {
@@ -300,14 +322,21 @@ static void handle_new_device() {
         return;
     }
 
-    if (setup_hid_endpoint(config_desc)) {
+    if (setup_hid_endpoints(config_desc)) {
         _reading_reports = true;
-        err = usb_host_transfer_submit(_xfer);
-        if (err != ESP_OK) {
-            udp_logf("[USBTouch] Submit failed: %d", err);
-            _reading_reports = false;
-        } else {
+        bool any_ok = false;
+        for (int i = 0; i < _num_eps; i++) {
+            err = usb_host_transfer_submit(_xfer[i]);
+            if (err != ESP_OK) {
+                udp_logf("[USBTouch] Submit EP %d failed: %d", i, err);
+            } else {
+                any_ok = true;
+            }
+        }
+        if (any_ok) {
             udp_log("[USBTouch] Touch panel active!");
+        } else {
+            _reading_reports = false;
         }
     } else {
         udp_log("[USBTouch] No HID endpoint found");
@@ -320,10 +349,13 @@ static void handle_device_gone() {
     _finger_down = false;
     udp_log("[USBTouch] Device disconnected");
 
-    if (_xfer) {
-        usb_host_transfer_free(_xfer);
-        _xfer = nullptr;
+    for (int i = 0; i < _num_eps; i++) {
+        if (_xfer[i]) {
+            usb_host_transfer_free(_xfer[i]);
+            _xfer[i] = nullptr;
+        }
     }
+    _num_eps = 0;
     if (_dev_hdl) {
         usb_host_device_close(_client, _dev_hdl);
         _dev_hdl = nullptr;
@@ -340,6 +372,12 @@ void usb_touch_init() {
     // Enable PMU OTG for 5V USB power
     pmu_enable_otg();
 
+    // Give the touch panel time to power up before USB Host starts enumerating.
+    // Without this delay, an already-plugged panel may finish enumeration
+    // before our client is registered, and the NEW_DEV event is lost.
+    udp_log("[USBTouch] Waiting for panel to power up...");
+    delay(1500);
+
     // Install USB Host library
     usb_host_config_t host_config = {
         .skip_phy_setup = false,
@@ -351,10 +389,7 @@ void usb_touch_init() {
         return;
     }
 
-    // Daemon task on core 0
-    xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096, NULL, 2, NULL, 0);
-
-    // Register client
+    // Register client BEFORE starting daemon task to avoid missing events
     usb_host_client_config_t client_config = {
         .is_synchronous = false,
         .max_num_event_msg = 5,
@@ -369,8 +404,21 @@ void usb_touch_init() {
         return;
     }
 
+    // Daemon task on core 0 — started after client registration
+    xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096, NULL, 2, NULL, 0);
+
     _usb_initialized = true;
-    udp_log("[USBTouch] Ready — plug in touch panel");
+    udp_log("[USBTouch] USB Host ready, waiting for touch panel...");
+
+    // Pump events briefly to catch already-connected devices
+    for (int i = 0; i < 20; i++) {
+        usb_host_client_handle_events(_client, 100);
+        if (_new_dev_addr != 0) {
+            udp_log("[USBTouch] Device detected during init!");
+            handle_new_device();
+            break;
+        }
+    }
 }
 
 void usb_touch_task() {
