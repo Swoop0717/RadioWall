@@ -62,7 +62,13 @@ def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
         draw.text((pad, bot_sep_y + pad), bottom_line, font=fs.small, fill=AMBER)
 
 
-MODES = [draw_mockup, visualizer.draw]
+MODES = [
+    draw_mockup,
+    visualizer.draw_bars,
+    visualizer.draw_mirror,
+    visualizer.draw_radial,
+    visualizer.draw_wave,
+]
 
 
 class _Buttons:
