@@ -12,6 +12,7 @@ globals, so the same code looks OK on a 64 px OLED and a 135 px TFT.
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 
@@ -46,18 +47,31 @@ class FontSet:
     tiny: ImageFont.ImageFont
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name) or default)
+    except ValueError:
+        return default
+
+
 def fonts_for(height: int) -> FontSet:
     """Font set sized as fractions of display height.
 
-    Fractions tuned for ~240x135 TFTs viewed at arm's length — legible
-    across a room, not screen-real-estate efficient. Re-tune if the
-    layout ever needs to cram more lines on the panel.
+    Every level is env-overridable for live tuning without commits:
+      RADIOWALL_FONT_BIG    (default 0.42)
+      RADIOWALL_FONT_MED    (default 0.26)
+      RADIOWALL_FONT_SMALL  (default 0.20)
+      RADIOWALL_FONT_TINY   (default 0.16)
     """
+    big = _env_float("RADIOWALL_FONT_BIG", 0.42)
+    med = _env_float("RADIOWALL_FONT_MED", 0.26)
+    small = _env_float("RADIOWALL_FONT_SMALL", 0.20)
+    tiny = _env_float("RADIOWALL_FONT_TINY", 0.16)
     return FontSet(
-        big=load(max(12, int(height * 0.52))),
-        med=load(max(10, int(height * 0.26))),
-        small=load(max(8, int(height * 0.20))),
-        tiny=load(max(7, int(height * 0.16))),
+        big=load(max(12, int(height * big))),
+        med=load(max(10, int(height * med))),
+        small=load(max(8, int(height * small))),
+        tiny=load(max(7, int(height * tiny))),
     )
 
 

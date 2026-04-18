@@ -99,17 +99,15 @@ def _make_st7789():
             self.command(0x2B, y1 >> 8, y1 & 0xFF, (y2 - 1) >> 8, (y2 - 1) & 0xFF)
             self.command(0x2C)
 
-    # Orientation is board-mount-dependent — HAT could be attached
-    # either way up in the frame. Controller is hardware-landscape
-    # via MADCTL=0x70; rotate=0 or 2 keeps the 240x135 aspect ratio
-    # (rotate=1/3 would swap width/height via capabilities() which
-    # breaks offsets and layout assumptions). Override with
-    # RADIOWALL_DISPLAY_ROTATE=0|2 — default 0.
-    rotate = int(os.getenv("RADIOWALL_DISPLAY_ROTATE", "0"))
-    if rotate not in (0, 2):
-        log.warning("RADIOWALL_DISPLAY_ROTATE=%d unsupported on ST7789 1.14\"; "
-                    "forcing 0. 1/3 swap dims and need different offsets.", rotate)
-        rotate = 0
+    # Orientation depends on how the HAT sits in the frame, not on
+    # the driver. RADIOWALL_FLIP=1 rotates the image 180° (luma
+    # rotate=2). 90/270° rotations would swap width/height via
+    # capabilities() and need different sub-panel offsets — not
+    # supported here.
+    flip = os.getenv("RADIOWALL_FLIP", "0").strip().lower() in ("1", "true", "on", "yes")
+    rotate = 2 if flip else 0
+    log.info("ST7789 orientation: %s (rotate=%d)",
+             "flipped 180°" if flip else "normal", rotate)
 
     return st7789_135(
         spi(port=0, device=0, gpio_DC=_ST7789_DC_PIN, gpio_RST=None,
