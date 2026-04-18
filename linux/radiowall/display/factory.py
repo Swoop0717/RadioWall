@@ -24,10 +24,15 @@ DEFAULT_EMULATOR_W = 240
 DEFAULT_EMULATOR_H = 135
 DEFAULT_EMULATOR_SCALE = 4
 
-# ST7789 Pi TFT 1.14" (Adafruit Mini PiTFT + clones): backlight on GPIO 22.
-# We hold the line HIGH for the process lifetime via gpiod v2.
-_ST7789_BACKLIGHT_PIN = 22
-_backlight_handle = None
+# Adafruit Mini PiTFT 1.14" 240x135 (and Chinese clones): the visible
+# panel is a sub-region of the ST7789's 240x320 controller RAM. In
+# landscape (MADCTL=0x70), active window starts at (40, 53).
+_ST7789_1P14_X_OFFSET = 40
+_ST7789_1P14_Y_OFFSET = 53
+
+# Pinout on these boards: DC=GPIO25, backlight=GPIO22, RST not wired.
+_ST7789_DC_PIN = 25
+_ST7789_BL_PIN = 22
 
 
 def _pick_driver() -> str:
@@ -70,19 +75,37 @@ def _make_emulator(scale: int | None):
 
 
 def _make_st7789():
-    _set_backlight_on()
     from luma.core.interface.serial import spi
     from luma.lcd.device import st7789
 
-    # Adafruit Mini PiTFT 1.14" (and clones):
-    #   DC = GPIO 25, RST = not wired (self-reset via POR), CS = CE0
-    # luma.lcd computes the offsets into the controller's 240x320 frame
-    # internally from (width, height, rotate).
-    return st7789(
-        spi(port=0, device=0, gpio_DC=25, gpio_RST=None, bus_speed_hz=40_000_000),
+    # luma.lcd's st7789 writes pixels at controller-memory (0,0) with
+    # no offset logic — correct for 240x240 and 240x320 panels, wrong
+    # for 240x135 sub-panels. Subclass and shift the CASET/RASET
+    # window by the panel's offset in controller RAM.
+    class st7789_135(st7789):
+        def set_window(self, x1, y1, x2, y2):
+            x1 += _ST7789_1P14_X_OFFSET
+            x2 += _ST7789_1P14_X_OFFSET
+            y1 += _ST7789_1P14_Y_OFFSET
+            y2 += _ST7789_1P14_Y_OFFSET
+            self.command(0x2A, x1 >> 8, x1 & 0xFF, (x2 - 1) >> 8, (x2 - 1) & 0xFF)
+            self.command(0x2B, y1 >> 8, y1 & 0xFF, (y2 - 1) >> 8, (y2 - 1) & 0xFF)
+            self.command(0x2C)
+
+    # luma.lcd's st7789 hardcodes MADCTL=0x70 — the controller is
+    # already in landscape (MV=1, rows/cols swapped) so rotate=0 is
+    # correct here; passing rotate=1 would rotate the PIL image on
+    # top of that and give a wrong-orientation output. capabilities()
+    # swaps self.width/height based on rotate, so rotate=0 keeps
+    # (device.width=240, device.height=135) matching our intent.
+    return st7789_135(
+        spi(port=0, device=0, gpio_DC=_ST7789_DC_PIN, gpio_RST=None,
+            bus_speed_hz=40_000_000),
         width=240,
         height=135,
-        rotate=1,
+        rotate=0,
+        gpio_LIGHT=_ST7789_BL_PIN,
+        active_low=False,
     )
 
 
@@ -91,27 +114,3 @@ def _make_ssd1322():
     from luma.oled.device import ssd1322
 
     return ssd1322(spi(port=0, device=0), width=256, height=64)
-
-
-def _set_backlight_on() -> None:
-    """Drive the ST7789 backlight pin HIGH via gpiod v2. Idempotent."""
-    global _backlight_handle
-    if _backlight_handle is not None:
-        return
-    try:
-        import gpiod
-        from gpiod.line import Direction, Value
-
-        _backlight_handle = gpiod.request_lines(
-            "/dev/gpiochip0",
-            consumer="radiowall-bl",
-            config={
-                _ST7789_BACKLIGHT_PIN: gpiod.LineSettings(
-                    direction=Direction.OUTPUT,
-                    output_value=Value.ACTIVE,
-                )
-            },
-        )
-    except Exception as e:
-        log.warning("backlight GPIO %d not driven (%s) — screen may stay dark",
-                    _ST7789_BACKLIGHT_PIN, e)
