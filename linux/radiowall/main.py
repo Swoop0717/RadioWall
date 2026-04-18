@@ -23,7 +23,7 @@ AMBER = (255, 176, 0)       # classic VFD color
 AMBER_DIM = (110, 75, 0)    # separator / bg accents
 
 
-SCROLL_PX_PER_FRAME = 1    # pixels per tick; smaller = slower, smoother
+SCROLL_PX_PER_FRAME = 2    # pixels per tick; smaller = slower, smoother
 
 
 def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
