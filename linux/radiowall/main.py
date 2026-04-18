@@ -129,7 +129,7 @@ def main() -> int:
                 log.info("button B: reset to mockup")
             MODES[mode](device, frame, fs)
             frame += 1
-            time.sleep(0.04)   # ~25 fps
+            time.sleep(0.02)   # target 50 fps, actual capped by SPI+PNG
     except KeyboardInterrupt:
         pass
 
