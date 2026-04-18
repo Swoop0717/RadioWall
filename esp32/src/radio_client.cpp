@@ -376,10 +376,14 @@ bool radio_play_by_id(const char* station_id, const char* title,
 
 String radio_get_stream_url(const char* station_id) {
     String path = "/api/ara/content/listen/" + String(station_id) + "/channel.mp3";
+    udp_logf("[Radio] Getting stream URL for %s", station_id);
     String redirect_url = get_redirect_url(path.c_str());
 
     if (redirect_url.length() > 0) {
         Serial.printf("[Radio] Stream URL: %s\n", redirect_url.c_str());
+        udp_logf("[Radio] Stream URL: %.80s", redirect_url.c_str());
+    } else {
+        udp_log("[Radio] Stream URL empty (redirect failed)");
     }
 
     return redirect_url;

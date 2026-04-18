@@ -6,6 +6,7 @@
  */
 
 #include "linkplay_client.h"
+#include "udp_log.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -39,10 +40,14 @@ static String make_request_impl(const String& target_ip, const char* command, in
         WiFiClientSecure client;
         client.setInsecure();
 
+        udp_logf("[LinkPlay] Connecting to %s:443 (attempt %d/%d)",
+                 target_ip.c_str(), attempt + 1, retries + 1);
         if (!client.connect(ip, 443)) {
+            udp_logf("[LinkPlay] Connection FAILED to %s", target_ip.c_str());
             delay(100);
             continue;
         }
+        udp_log("[LinkPlay] Connected, sending request");
 
         String request = "GET " + path + " HTTP/1.1\r\n";
         request += "Host: " + target_ip + "\r\n";
@@ -52,6 +57,7 @@ static String make_request_impl(const String& target_ip, const char* command, in
         unsigned long timeout = millis() + 5000;
         while (client.connected() && !client.available()) {
             if (millis() > timeout) {
+                udp_log("[LinkPlay] Response timeout");
                 client.stop();
                 continue;
             }

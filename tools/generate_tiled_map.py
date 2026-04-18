@@ -38,19 +38,19 @@ import requests
 TOUCH_WIDTH_MM = 1100   # 110 cm
 TOUCH_HEIGHT_MM = 620   # 62 cm
 
-# A4 sheet dimensions (mm)
-A4_WIDTH_MM = 297
-A4_HEIGHT_MM = 210
+# A3 sheet dimensions (mm) — landscape
+A4_WIDTH_MM = 420
+A4_HEIGHT_MM = 297
 
-# Margins on each side of the A4 sheet (mm)
+# Margins on each side of the A3 sheet (mm)
 MARGIN_MM = 10
 
 # Overlap between adjacent tiles for alignment (mm)
 OVERLAP_MM = 15
 
 # Usable print area per sheet
-USABLE_WIDTH_MM = A4_WIDTH_MM - 2 * MARGIN_MM   # 277 mm
-USABLE_HEIGHT_MM = A4_HEIGHT_MM - 2 * MARGIN_MM  # 190 mm
+USABLE_WIDTH_MM = A4_WIDTH_MM - 2 * MARGIN_MM   # 400 mm
+USABLE_HEIGHT_MM = A4_HEIGHT_MM - 2 * MARGIN_MM  # 277 mm
 
 # Alignment mark length (mm)
 MARK_LEN_MM = 5
@@ -64,7 +64,7 @@ NE_BORDERS_50M_URL = "https://naciscdn.org/naturalearth/50m/cultural/ne_50m_admi
 # Output paths
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
-OUTPUT_PDF = SCRIPT_DIR / "world_map_tiled.pdf"
+OUTPUT_PDF = SCRIPT_DIR / "world_map_tiled_a3.pdf"
 
 # Map colors (light, easy to see through for tracing)
 OCEAN_COLOR = "#D4E8F0"      # Light blue
