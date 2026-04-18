@@ -111,16 +111,24 @@ class _Decoder:
         ]
 
         bytes_per_chunk = CHUNK_SAMPLES * 2
+        stdout = self._proc.stdout
+        buf = bytearray(bytes_per_chunk)
+        view = memoryview(buf)
         while not self._stop.is_set():
-            raw = self._proc.stdout.read(bytes_per_chunk)
-            if len(raw) < bytes_per_chunk:
-                rc = self._proc.poll()
-                log.info("decoder pcm stream ended (ffmpeg rc=%s, got %d/%d bytes)",
-                         rc, len(raw), bytes_per_chunk)
-                return
+            # read EXACTLY bytes_per_chunk; .read() on a subprocess pipe
+            # returns "what's currently available", not a fixed length
+            got = 0
+            while got < bytes_per_chunk:
+                n = stdout.readinto(view[got:])
+                if not n:
+                    rc = self._proc.poll()
+                    log.info("decoder pcm stream ended (ffmpeg rc=%s, got %d/%d bytes)",
+                             rc, got, bytes_per_chunk)
+                    return
+                got += n
 
             samples = (
-                np.frombuffer(raw, dtype=np.int16)
+                np.frombuffer(bytes(buf), dtype=np.int16)
                   .astype(np.float32) / 32768.0
             )
             spec = np.abs(np.fft.rfft(samples * window))
