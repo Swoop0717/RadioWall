@@ -1,0 +1,32 @@
+[project]
+name = "radiowall"
+version = "0.1.0"
+description = "RadioWall — interactive world map radio, Linux SBC port"
+requires-python = ">=3.11"
+dependencies = [
+    "luma.oled>=3.14",
+    "luma.emulator>=1.5",
+    "pygame>=2.5",
+    "pillow>=10.0",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+pi = [
+    "python-evdev>=1.7",
+    "gpiod>=2.1",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+radiowall = "radiowall.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["radiowall*"]
