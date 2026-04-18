@@ -27,50 +27,36 @@ def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
     W, H = device.width, device.height
     pad = max(2, W // 64)
 
-    # bottom marquee scroll
-    marquee = " · Blue in Green — Miles Davis    "
-    scroll_len = max(16, W // 7)
-    offset = frame % len(marquee)
-    visible = (marquee + marquee)[offset:offset + scroll_len]
+    # mock data that eventually comes from AppState
+    top_line = "Vienna  AT  ·  3/12"
+    bottom_line = "vol 45  ·  94.0  ·  WiiM"
+    scroll = "   Radio Wien  ·  Blue in Green  ·  Miles Davis   "
+
+    # character-level scroll for the mockup; when we wire real
+    # data we'll switch to pixel-precise scrolling via textlength
+    scroll_chars_visible = max(8, W // (fs.big.size // 2))
+    offset = frame % len(scroll)
+    visible = (scroll + scroll)[offset:offset + scroll_chars_visible]
 
     with canvas(device) as draw:
-        # --- top band: signal bars (left), indicators (right) ---
-        top_baseline = int(H * 0.18)
-        bar_bottom = top_baseline
-        for i, frac in enumerate([0.25, 0.5, 0.75, 1.0]):
-            x = pad + i * (pad + 1)
-            bar_h = max(1, int(top_baseline * frac * 0.8))
-            draw.rectangle(
-                (x, bar_bottom - bar_h, x + max(1, pad // 2), bar_bottom),
-                fill=AMBER,
-            )
+        # --- top info band ---
+        draw.text((pad, pad), top_line, font=fs.small, fill=AMBER)
 
-        indicators = "FM · ST · P2"
-        iw = draw.textlength(indicators, font=fs.tiny)
-        draw.text((W - pad - iw, pad), indicators, font=fs.tiny, fill=AMBER)
+        # --- separators framing the middle scroll band ---
+        top_sep_y = int(H * 0.26)
+        bot_sep_y = int(H * 0.80)
+        draw.line((0, top_sep_y, W, top_sep_y), fill=AMBER_DIM)
+        draw.line((0, bot_sep_y, W, bot_sep_y), fill=AMBER_DIM)
 
-        # --- station name: big, left-aligned, starts just below top band ---
-        draw.text((pad, int(H * 0.22)), "Radio Orange", font=fs.big, fill=AMBER)
+        # --- middle: big scrolling line ---
+        band_top = top_sep_y + 2
+        band_h = bot_sep_y - top_sep_y
+        # vertically center the text inside the band
+        y_text = band_top + max(0, (band_h - fs.big.size) // 2)
+        draw.text((pad, y_text), visible, font=fs.big, fill=AMBER)
 
-        # --- metadata line ---
-        draw.text(
-            (pad, int(H * 0.65)),
-            "Vienna  AT  ·  94.0",
-            font=fs.med,
-            fill=AMBER,
-        )
-
-        # --- separator above marquee ---
-        sep_y = int(H * 0.88)
-        draw.line((0, sep_y, W, sep_y), fill=AMBER_DIM)
-
-        # --- scrolling marquee ---
-        draw.text(
-            (pad, sep_y + max(1, (H - sep_y) // 6)),
-            visible,
-            font=fs.tiny,
-            fill=AMBER,
-        )
+        # --- bottom info band ---
+        draw.text((pad, bot_sep_y + pad), bottom_line, font=fs.small, fill=AMBER)
 
 
 def main() -> int:

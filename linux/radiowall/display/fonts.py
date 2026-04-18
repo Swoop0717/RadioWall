@@ -47,12 +47,17 @@ class FontSet:
 
 
 def fonts_for(height: int) -> FontSet:
-    """Font set sized as fractions of display height."""
+    """Font set sized as fractions of display height.
+
+    Fractions tuned for ~240x135 TFTs viewed at arm's length — legible
+    across a room, not screen-real-estate efficient. Re-tune if the
+    layout ever needs to cram more lines on the panel.
+    """
     return FontSet(
-        big=load(max(10, int(height * 0.40))),
-        med=load(max(8, int(height * 0.18))),
-        small=load(max(7, int(height * 0.13))),
-        tiny=load(max(6, int(height * 0.11))),
+        big=load(max(12, int(height * 0.55))),
+        med=load(max(10, int(height * 0.26))),
+        small=load(max(8, int(height * 0.20))),
+        tiny=load(max(7, int(height * 0.16))),
     )
 
 
