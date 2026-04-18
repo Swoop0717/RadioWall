@@ -127,6 +127,8 @@ def main() -> int:
 
     try:
         frame = 0
+        fps_t = time.monotonic()
+        fps_n = 0
         while True:
             a_event, b_event = buttons.poll()
             if a_event:
@@ -137,6 +139,13 @@ def main() -> int:
                 log.info("button B: reset to mockup")
             MODES[mode](device, frame, fs)
             frame += 1
+            fps_n += 1
+            now = time.monotonic()
+            if now - fps_t >= 2.0:
+                log.info("render: %.1f fps (mode=%s)",
+                         fps_n / (now - fps_t), MODES[mode].__name__)
+                fps_t = now
+                fps_n = 0
             time.sleep(0.02)
     except KeyboardInterrupt:
         pass
