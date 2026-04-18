@@ -99,18 +99,24 @@ def _make_st7789():
             self.command(0x2B, y1 >> 8, y1 & 0xFF, (y2 - 1) >> 8, (y2 - 1) & 0xFF)
             self.command(0x2C)
 
-    # luma.lcd's st7789 hardcodes MADCTL=0x70 — the controller is
-    # already in landscape (MV=1, rows/cols swapped) so rotate=0 is
-    # correct here; passing rotate=1 would rotate the PIL image on
-    # top of that and give a wrong-orientation output. capabilities()
-    # swaps self.width/height based on rotate, so rotate=0 keeps
-    # (device.width=240, device.height=135) matching our intent.
+    # Orientation is board-mount-dependent — HAT could be attached
+    # either way up in the frame. Controller is hardware-landscape
+    # via MADCTL=0x70; rotate=0 or 2 keeps the 240x135 aspect ratio
+    # (rotate=1/3 would swap width/height via capabilities() which
+    # breaks offsets and layout assumptions). Override with
+    # RADIOWALL_DISPLAY_ROTATE=0|2 — default 0.
+    rotate = int(os.getenv("RADIOWALL_DISPLAY_ROTATE", "0"))
+    if rotate not in (0, 2):
+        log.warning("RADIOWALL_DISPLAY_ROTATE=%d unsupported on ST7789 1.14\"; "
+                    "forcing 0. 1/3 swap dims and need different offsets.", rotate)
+        rotate = 0
+
     return st7789_135(
         spi(port=0, device=0, gpio_DC=_ST7789_DC_PIN, gpio_RST=None,
             bus_speed_hz=40_000_000),
         width=240,
         height=135,
-        rotate=0,
+        rotate=rotate,
         gpio_LIGHT=_ST7789_BL_PIN,
         active_low=False,
     )
