@@ -51,12 +51,19 @@ def make_device(mock: bool | None = None, scale: int | None = None):
     log.info("display driver: %s", driver)
 
     if driver == "emulator":
-        return _make_emulator(scale)
-    if driver == "st7789":
-        return _make_st7789()
-    if driver == "ssd1322":
-        return _make_ssd1322()
-    raise ValueError(f"Unknown RADIOWALL_DISPLAY={driver!r}")
+        device = _make_emulator(scale)
+    elif driver == "st7789":
+        device = _make_st7789()
+    elif driver == "ssd1322":
+        device = _make_ssd1322()
+    else:
+        raise ValueError(f"Unknown RADIOWALL_DISPLAY={driver!r}")
+
+    # opt-in LAN mirror: reads RADIOWALL_MIRROR env var
+    from radiowall.display.mirror import install_mirror
+    install_mirror(device)
+
+    return device
 
 
 def _make_emulator(scale: int | None):
