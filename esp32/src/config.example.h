@@ -10,31 +10,13 @@
 // =============================================================================
 // WiFi Settings
 // =============================================================================
-// WiFi credentials are now OPTIONAL — WiFiManager captive portal handles setup.
+// WiFi credentials are OPTIONAL — WiFiManager captive portal handles setup.
 // On first boot, ESP32 creates "RadioWall" AP. Connect and configure via browser.
-// Uncomment below only if you want hardcoded fallback (e.g., for mqtt_client).
 // #define WIFI_SSID "your_wifi_ssid"
 // #define WIFI_PASSWORD "your_wifi_password"
 
 // WiFi connection timeout (milliseconds)
 #define WIFI_CONNECT_TIMEOUT 10000
-
-// =============================================================================
-// MQTT Settings
-// =============================================================================
-#define MQTT_SERVER "192.168.1.100"  // Your server IP
-#define MQTT_PORT 1883
-// #define MQTT_USER ""              // Uncomment if authentication required
-// #define MQTT_PASSWORD ""
-
-// MQTT Topics
-#define MQTT_TOPIC_TOUCH "radiowall/touch"
-#define MQTT_TOPIC_NOWPLAYING "radiowall/nowplaying"
-#define MQTT_TOPIC_STATUS "radiowall/status"
-#define MQTT_TOPIC_COMMAND "radiowall/command"
-
-// Client ID (should be unique)
-#define MQTT_CLIENT_ID "radiowall-esp32"
 
 // =============================================================================
 // Touch Panel Settings

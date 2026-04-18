@@ -1,16 +1,44 @@
-# CLAUDE.md - RadioWall Project Context
+# CLAUDE.md — RadioWall Project Context
 
 > Technical reference for AI assistants working on this codebase.
 
 ## Project Overview
 
-RadioWall is an interactive physical world map that plays local radio stations when you touch a location. Touch Vienna → hear Austrian radio. Touch Tokyo → hear Japanese radio.
+RadioWall is an interactive physical world map that plays local radio stations when you touch a location. Touch Vienna → Austrian radio. Touch Tokyo → Japanese radio.
 
-**The Vision**: A physical paper/cloth map sits behind invisible capacitive touch glass. No screen on the map — just a small ESP32 display showing "Now Playing" info.
+**Vision**: a physical paper/cloth map sits behind invisible capacitive touch. No screen on the map — a small status display (or none at all) shows "Now Playing".
 
-**Current State**: **ESP32 Standalone Mode** — fully working end-to-end without server. Touch map → find city → fetch Radio.garden stations → stream to WiiM via LinkPlay.
+**Data flow**: Touch → compute board finds nearest city in a local places DB → fetches stations from Radio.garden → sends stream URL to a WiiM speaker via LinkPlay HTTPS → WiiM streams directly from the internet. The compute board never handles audio.
 
-## Architecture (Standalone - No Server Required)
+## Two Tracks
+
+### [esp32/](esp32/) — ESP32 firmware (feature complete, reference)
+
+Working prototypes on ESP32-S3. Tagged `v1.0-prototype1` for P1. This track is **no longer active development** but kept as working reference firmware and as the source of truth for the hardware + LinkPlay/Radio.garden behavior.
+
+- **P1** (`env:t-display-s3-long`): LILYGO T-Display-S3-Long. Built-in 3.4" AMOLED + I2C touch. Full standalone firmware: map UI, favorites, history, settings, volume, sleep timer, multiroom, zoom.
+- **P2** (`env:usb-touch`): ESP32-S3 + 55" IR touch frame over USB Host. Serial replaced by WiFi UDP logging (port 9999). Control zone: `server_y > 550` = play/pause.
+
+### [linux/](linux/) — Linux SBC port (active, scaffolding in progress)
+
+Target: Orange Pi Zero 3 (Allwinner H618). Port the same standalone logic to Python on a real Linux userspace — easier UI, faster iteration, IR frame shows up as `/dev/input/eventN`, no LittleFS/PSRAM gymnastics. Nothing committed yet beyond this branch.
+
+## How It Works (both tracks)
+
+1. Touch → pixel coords → (lat, lon)
+2. Find nearest city in places DB (~12,500 cities, packed binary from `tools/compile_places.py`)
+3. Fetch station list from Radio.garden (`/api/ara/content/page/{place_id}/channels`)
+4. Resolve stream URL (follow first redirect on `/listen/{id}/channel.mp3`)
+5. `GET https://<wiim>/httpapi.asp?command=setPlayerCmd:play:<url>`
+6. WiiM plays; compute board coordinates but carries no audio
+
+NEXT cycles stations at the current city, then hops to the next nearest city (visited set, max 20 hops).
+
+---
+
+## ESP32 Track Reference
+
+### Architecture diagram (current hardware)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -21,962 +49,180 @@ RadioWall is an interactive physical world map that plays local radio stations w
 │                              │ USB                               │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  Touch USB Controller → ESP32-S3-Long (USB Host mode)     │  │
-│  │                         ┌─────────────────┐               │  │
-│  │                         │ [World Map]     │               │  │
-│  │  5V Power (via pins) →  │ Region: Europe  │               │  │
-│  │                         │ [STOP]   [NEXT] │               │  │
-│  │                         └─────────────────┘               │  │
+│  │  5V via PMU OTG boost (SY6970)                            │  │
 │  └───────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
-                              │ WiFi (direct)
-                              │
+                              │ WiFi
               ┌───────────────┴───────────────┐
-              │                               │
               ▼                               ▼
     ┌─────────────────┐             ┌─────────────────┐
     │  Radio.garden   │             │  WiiM Speaker   │
-    │  (stations API) │             │  (LinkPlay API) │
     └─────────────────┘             └─────────────────┘
 ```
 
-**Data Flow**: Touch → ESP32 finds nearest city → fetches stations from Radio.garden → gets stream URL → sends to WiiM via LinkPlay HTTPS API
-
-## Current Status: Prototype 1 (Fully Working)
-
-> **Prototype 1** uses the ESP32's built-in touchscreen + world map display as a temporary stand-in for the external touch panel + physical map. **Fully functional end-to-end.**
-
-| Component | Status |
-|-----------|--------|
-| ESP32 Display | ✅ Working (Arduino_GFX + AXS15231 AMOLED) |
-| ESP32 Built-in Touch | ✅ Working (I2C interrupt-driven) |
-| Places Database | ✅ 12,486 cities loaded from LittleFS |
-| Radio.garden Client | ✅ HTTPS, JSON parsing, station caching |
-| LinkPlay Client | ✅ WiiM control via HTTPS (port 443) |
-| Physical Button | ✅ Multi-action: short/long/double-tap |
-| Touch Buttons | ✅ STOP and NEXT in status bar |
-| Map Rendering | ✅ Optimized drawFastHLine (library fix), zoomable (1x–5x), double-tap zoom |
-| UI Theme | ✅ Custom fonts (FreeSansBold), rounded cards, icons |
-| Favorites | ✅ LittleFS persistence, paginated list, play/delete |
-| History | ✅ Auto-records last 20 stations, deduplication |
-| Settings | ✅ mDNS device discovery, multiroom, zoom (1-5x), WiFi reconnect |
-| End-to-End Flow | ✅ Touch → Places → Radio.garden → WiiM |
-| Server (Docker) | ⏸️ Not needed (standalone mode) |
-| USB Touch Panel | 🔧 Skeleton, waiting for OTG adapter |
-
-### User Controls
-
-| Input | Action |
-|-------|--------|
-| Touch map | Play radio from nearest city (X marker at city) |
-| Double-tap map | Zoom in one level (1x→2x→3x→4x→5x→1x), centered on tap |
-| Touch STOP button | Stop playback |
-| Touch NEXT button | Next station; hops to next city when exhausted |
-| Swipe left/right | Cycle map region |
-| Button short press | Cycle map region (Americas/Europe/Asia/Pacific) |
-| Button long press (>800ms) | Toggle menu |
-| Button double-tap (<400ms) | Next station |
-| Menu → Volume | Tap-based vertical volume slider |
-| Menu → Pause/Resume | Toggle pause/resume |
-| Menu → Sleep Timer | Cycle: Off/15/30/60/90 min |
-| Menu → Favorites | View/play/delete saved stations |
-| Menu → History | View/replay last 20 stations played |
-| Menu → Settings | WiiM device discovery, zoom level, multiroom, WiFi reconnect |
-| Favorites → ADD | Save currently playing station |
-| History → CLEAR | Wipe all playback history |
-
-### ✅ COMPLETED: Prototype 2 (External Touch Panel)
-
-- [x] USB Host HID in `usb_touch.cpp` — 55" IR frame (VID:1FF7, EP 0x83, 8-byte reports)
-- [x] `USE_BUILTIN_TOUCH 0` mode with USB touch panel
-- [x] PMU OTG 5V boost for USB Host power
-- [x] UDP WiFi logging (Serial unavailable in USB Host mode)
-- [x] Control zone: Antarctica strip (y>550) = play/pause toggle
-- [x] Tiled map generator (`tools/generate_tiled_map.py`) for tracing onto glass
-
-### TODO: Prototype 3 (E-Ink + IR Touch Frame)
-
-**Hardware:** Heltec Vision Master E213 (ESP32-S3, 2.13" E-Ink 250×122) + 55" IR touch frame
-
-**Display & Integration:**
-- [ ] Integrate E-Ink display with radio/touch/linkplay firmware
-- [ ] Design "Now Playing" layout for 250×122 (station, city, status)
-- [ ] Show loading/error states on E-Ink
-
-**Touch Zone Controls (on IR frame):**
-- [ ] Define control zones: stop, next, volume up/down, favorites
-- [ ] Ocean areas as button zones (Atlantic, Pacific dead space)
-- [ ] Antarctica strip: play/pause (already started)
-
-**Power Management:**
-- [ ] Measure IR touch frame power draw (SY6970 I2C registers or USB meter)
-- [ ] Sleep mode: timeout → disable OTG (kill touch frame 5V) → ESP32 deep sleep
-- [ ] Wake on GPIO 21 button press → re-enable OTG → reconnect touch panel
-- [ ] Solve single USB-C port (charge vs OTG touch panel):
-  - Wall power via battery connector (SH1.25) + TP4056 charger module
-  - Or powered USB hub
-  - Long-term: wall-mounted frame with permanent power
-
-**Configuration (Web Portal via WiFi AP):**
-- [ ] WiFi credentials (already working via WiFiManager)
-- [ ] LinkPlay/WiiM device selection
-- [ ] Favorites management
-- [ ] Touch zone calibration
-
-**Button (GPIO 21):**
-- [ ] Wake from deep sleep
-- [ ] Short press: next station
-- [ ] Long press: stop / toggle menu
-
-### ✅ COMPLETED: Standalone Mode (No Server)
-
-The ESP32 now works completely standalone — no server required!
-
-**Implemented files:**
-| File | Purpose |
-|------|---------|
-| `tools/compile_places.py` | ✅ Downloads Radio.garden places → `places.bin` (634KB) |
-| `esp32/src/radio_client.cpp` | ✅ Radio.garden API client, station caching |
-| `esp32/src/linkplay_client.cpp` | ✅ WiiM control via LinkPlay HTTPS API |
-| `esp32/src/places_db.cpp` | ✅ Load places from LittleFS, nearest-city lookup |
-
-**Completed tasks:**
-- [x] Create places compiler tool (Python)
-- [x] Implement ESP32 Radio.garden client (HTTPS, JSON parsing)
-- [x] Implement LinkPlay client (simpler than UPnP, HTTPS on port 443)
-- [x] Store WiiM IP in config.h (`WIIM_IP`)
-- [x] Remove MQTT dependency (standalone is default)
-- [x] Multi-action button support (short/long/double-tap)
-- [x] Optimized map rendering with drawFastHLine()
-
-**Note:** We use LinkPlay HTTP API instead of UPnP — simpler and works great with WiiM devices.
-
-### TODO: Production (Phase 5)
-
-- [x] ~~Source large touch panel (55"+)~~ → 55" IR touch frame (VID:1FF7)
-- [ ] Design frame with hidden electronics compartment
-- [ ] High-quality equirectangular map print (or whiteboard marker on glass)
-- [ ] Permanent power solution (wall adapter → TP4056 → battery connector)
-
----
-
-## ✅ Standalone Architecture (Implemented)
-
-The ESP32 handles everything — no server required:
-
-```
-Touch Panel → ESP32-S3 → WiFi → Radio.garden API
-                ↓                     ↓
-         [Now Playing]           Stream URL
-                                      ↓
-                            LinkPlay → WiiM 🔊
-```
-
-**How it works:**
-1. Touch map → ESP32 finds nearest city in places database
-2. ESP32 fetches station list from Radio.garden API
-3. ESP32 gets stream URL (follows redirect)
-4. ESP32 sends stream URL to WiiM via LinkPlay HTTPS API
-5. WiiM fetches audio stream directly from internet
-6. ESP32 just coordinates — no audio processing needed
-
----
-
-## Server (Python) - Optional
-
-> **Note:** The server is no longer required. ESP32 standalone mode handles everything directly. The server code remains for reference or alternative deployment.
-
-### Files
-
-| File | Purpose |
-|------|---------|
-| `server/main.py` | Orchestration, MQTT callbacks, event loop |
-| `server/radio_garden.py` | API client, place caching, stream validation |
-| `server/coordinates.py` | Pixel X/Y → lat/lon conversion |
-| `server/upnp_streamer.py` | UPnP/DLNA discovery and playback |
-| `server/mqtt_handler.py` | MQTT pub/sub (paho-mqtt v2.x) |
-| `server/config.yaml` | Runtime config (git-ignored) |
-
-### Running
-
-```bash
-cd /path/to/RadioWall
-docker compose up -d              # Start
-docker compose logs -f            # Follow logs
-docker compose up -d --build      # Rebuild after changes
-```
-
-### Testing
-
-```bash
-# Simulate touch
-docker exec radiowall-mosquitto-1 mosquitto_pub \
-  -t "radiowall/touch" -m '{"x":558,"y":193}'
-
-# Commands
-mosquitto_pub -t "radiowall/command" -m '{"cmd":"next"}'
-mosquitto_pub -t "radiowall/command" -m '{"cmd":"stop"}'
-```
-
-### Known Quirks
-
-- Radio.garden API: `geo` is `[longitude, latitude]` (not lat/lon!)
-- Channel data nested: `channel["page"]["url"]` and `channel["page"]["title"]`
-- Stream URL resolution: Only follows first redirect (avoids SSL errors)
-- paho-mqtt v2.x requires `CallbackAPIVersion.VERSION1` in Client constructor
-
----
-
-## ESP32 Firmware (C++/Arduino)
-
-### Files
+### Source files
 
 | File | Purpose |
 |------|---------|
 | `main.cpp` | Entry point, callback wiring |
 | `display.cpp/h` | AMOLED rendering (Arduino_GFX) |
 | `builtin_touch.cpp/h` | Built-in touchscreen (I2C, interrupt-driven) |
-| `usb_touch.cpp/h` | USB HID touch panel (skeleton) |
+| `usb_touch.cpp/h` | USB HID touch panel (55" IR frame) |
 | `radio_client.cpp/h` | Radio.garden API client, station caching, next-city hopping |
 | `linkplay_client.cpp/h` | WiiM control via LinkPlay HTTPS API |
 | `places_db.cpp/h` | Places database from LittleFS |
 | `ui_state.cpp/h` | Slice selection, playback state, marker tracking |
 | `world_map.cpp/h` | RLE bitmap decompression and optimized drawing |
-| `menu.cpp/h` | Touch menu system (volume, pause, favorites, history, sleep, settings) |
-| `favorites.cpp/h` | Favorites storage (LittleFS JSON), rendering, touch |
-| `history.cpp/h` | Playback history (ring buffer, LittleFS, auto-record, dedup) |
-| `settings.cpp/h` | WiiM device discovery (mDNS), multiroom, zoom level |
-| `theme.h` | Centralized UI theme: colors, fonts, icons, layout constants |
+| `menu.cpp/h` | Touch menu (volume, pause, favorites, history, sleep, settings) |
+| `favorites.cpp/h` | LittleFS JSON, paginated list |
+| `history.cpp/h` | Ring buffer of last 20, auto-record, dedup |
+| `settings.cpp/h` | WiiM mDNS discovery, multiroom, zoom |
+| `theme.h` | Colors, fonts, icons, layout constants |
 | `button_handler.cpp/h` | Multi-action button (short/long/double-tap) |
+| `udp_log.cpp/h` | UDP broadcast logging (port 9999) for USB Host mode |
 | `pins_config.h` | Hardware pin definitions |
-| `config.h` | WiFi, WiiM IP settings (git-ignored) |
+| `config.h` | WiFi, WiiM IP (git-ignored) |
 
 ### Building
 
 ```bash
 cd esp32
-cp src/config.example.h src/config.h
-# Edit config.h:
-#   - WIFI_SSID, WIFI_PASSWORD
-#   - WIIM_IP (find in WiiM app or router)
-
-pio run -t upload      # Upload firmware
-pio run -t uploadfs    # Upload places.bin to LittleFS
-pio device monitor     # Watch serial output
+cp src/config.example.h src/config.h         # edit WiiM IP
+pio run -e t-display-s3-long -t upload       # P1
+pio run -e t-display-s3-long -t uploadfs     # places.bin → LittleFS
+pio run -e usb-touch -t upload               # P2 (external IR frame)
 ```
 
-### Serial Commands (Testing)
+### Serial commands (testing)
 
 ```
-T:512,300       # Simulate touch at (512, 300) in server coordinates
-W:192.168.1.50  # Set WiiM IP address
+W:192.168.0.33  # Set WiiM IP
 P:<url>         # Play stream URL directly
-S               # Stop playback
-V:50            # Set volume to 50%
-?               # Get WiiM status
-L:48.21,16.37   # Lookup nearest place to coordinates
-D:10            # Dump first 10 places from database
+S               # Stop
+V:50            # Volume 50%
+?               # WiiM status JSON
+L:48.21,16.37   # Lookup nearest place
+D:10            # Dump first 10 places
+T:512,300       # Simulate touch (server 1024×600 coords)
 ```
 
----
+### Display system (P1)
 
-## Display System (Prototype 1)
+- **Hardware**: AXS15231B QSPI AMOLED, 180×640, portrait (rotation 0 — other rotations fade/crash).
+- **Layout**: map 180×580 full-width, status bar 180×60 (3 lines: city+count, station, [STOP][NEXT]).
+- **Longitude slices**: Americas (-150 to -30), Europe/Africa (-30 to 60, default), Asia (60 to 150), Pacific (wraps). Button 1 cycles.
+- **Zoom**: 1x–5x, double-tap cycles, Settings stores level. Tile data in `esp32/data/maps/zoom{2,3,4,5}.bin`.
 
-> **Note**: The world map on the ESP32 display is temporary for Prototype 1. In the final version, the map is physical and the ESP32 only shows "Now Playing" info.
+### Touch system
 
-### Hardware
+**Built-in (P1)**: AXS15231B, I2C addr 0x3B, INT pin GPIO 11 (FALLING). Read command `{0xB5, 0xAB, 0xA5, 0x5A, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00}`. Event extraction: `temp_buf[2] >> 6` → 0=DOWN, 1=UP, 2=CONTACT. X/Y bytes swapped vs LILYGO macros (bytes 4:5 = portrait X, bytes 2:3 = portrait Y).
 
-- **Display**: AXS15231B QSPI AMOLED, 180×640 pixels
-- **Orientation**: Portrait mode (rotation 0)
-- **Driver**: Arduino_AXS15231 from Arduino_GFX library
-- **Touch**: Integrated in display IC, I2C address 0x3B
+**USB IR frame (P2)**: VID 1FF7 PID 0013, EP 0x83 on interface 1, 8-byte reports. Format: `byte0=0x01` (report ID), `byte1=0x01/0x00` (down/up), `bytes 2-5 = X,Y` (LE uint16, 0–32767). Must claim both HID interfaces; touch data only on interface 1. Uses ESP-IDF `usb/usb_host.h`.
 
-### Screen Layout (Portrait)
+### Hardware pin map
 
-```
-┌──────────────────┐  (0,0)
-│                  │
-│   Map Bitmap     │  Map Area: 180×580 (full width)
-│   (current       │  Position: (0, 0)
-│    slice)        │
-│   [X] = city     │  Red X marker at playing city
-│                  │
-├──────────────────┤  y=580
-│ City, CC (2/5)   │  Status Bar: 180×60
-│ Station Name     │  Line 1: city + station count (green)
-│ [STOP]    [NEXT] │  Line 2: station name (white)
-└──────────────────┘  (180,640)
-```
+**Display (QSPI)**: CS=12, SCK=17, D0=13, D1=18, D2=21, D3=14, RST=16, BL=1
+**Touch (I2C)**: SDA=15, SCL=10, INT=11, RST=16 (shared with display!)
+**Button 1**: GPIO 0 (short=region, long=stop, double=next)
+**Button 2**: GPIO 21 — **DISABLED**, conflicts with TFT_QSPI_D2
 
-### Longitude Slices
+### Critical notes
 
-The world is divided into 4 vertical slices:
+- **Shared reset GPIO 16**: never reset after display init — touch init must skip it.
+- **Rotation 0 only**: rotations 1/3 fade/crash.
+- **WiiM is HTTPS on 443, self-signed**: `WiFiClientSecure` + `setInsecure()`. Port 80 is refused.
+- **Radio.garden**: use HTTP/1.0 (ESP32 TLS doesn't handle chunked well). Station URL is `/listen/{slug}/{id}` — the ID is the **second** path segment. Stream URL is a redirect. `DynamicJsonDocument(16384)` for station lists.
+- **Libraries pinned**: Arduino_GFX 1.3.7 (in `esp32/lib/`, manually patched so `writeFastHLine` uses `writeFillRectPreclipped` — drops map draw from ~5s to ~150ms), Arduino_DriveBus 1.1.12, ArduinoJson 6.21, WiFiManager (tzapu).
+- **PMU (SY6970) startup**: `IIC_WriteC8D8(0x6A, 0x00, 0B00111111)` and `IIC_WriteC8D8(0x6A, 0x09, 0B01100100)`.
+- **OTG 5V boost** for USB Host: REG03 (0x03) bit 5 — NOT REG01. REG07 bits [5:4] = 00 (disable watchdog, else regs reset ~40s). REG0A 0x80 = 5.15V.
 
-| Index | Name | Longitude Range |
-|-------|------|-----------------|
-| 0 | Americas | -150° to -30° |
-| 1 | Europe/Africa | -30° to 60° (default) |
-| 2 | Asia | 60° to 150° |
-| 3 | Pacific | 150° to -150° (wraps) |
+### Serial handling gotcha
 
-Button 1 (GPIO 0) cycles through slices.
-
-### Map Data Generation
-
-```bash
-cd tools
-pip install -r requirements.txt
-python generate_map_bitmaps.py
-```
-
-Downloads Natural Earth 1:110m coastline data, renders 180×580 bitmaps, RLE compresses to `esp32/src/world_map_data.h` (~22KB total). Also generates zoom 2x–5x tile data in `esp32/data/maps/zoom{2,3,4,5}.bin` for LittleFS.
-
----
-
-## Touch System
-
-### Prototype 1: Built-in Touch (AXS15231B)
-
-Used for testing while waiting for USB adapters.
-
-- **I2C Address**: 0x3B
-- **Interrupt Pin**: GPIO 11 (FALLING edge)
-- **Read Command**: `{0xB5, 0xAB, 0xA5, 0x5A, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00}`
-
-### Prototype 2: USB Touch Panel (TODO)
-
-The 9" capacitive touch panel (XY-PG9020) connects via USB and appears as HID device.
-
-- **File**: `usb_touch.cpp` (currently skeleton)
-- **TODO**: Enable USB Host mode, enumerate HID device, parse touch reports
-- **Testing**: Use `evtest` on Linux PC to inspect HID report format first
-
-### Touch Coordinate Flow (Prototype 1)
-
-```
-Display Touch (180×640 portrait)
-         │
-         ▼
-Zone Detection
-  ├─ y < 580 → Map Area
-  │     │
-  │     ▼
-  │   Normalize to map bounds
-  │     │
-  │     ▼
-  │   Convert to lat/lon using current slice
-  │     │
-  │     ▼
-  │   radio_play_at_location(lat, lon)
-  │     │
-  │     ▼
-  │   Find nearest city → Fetch stations → Play via WiiM
-  │
-  └─ y >= 580 → Status Bar
-        │
-        ▼
-      Button detection (x < 90 = STOP, else NEXT)
-        │
-        ▼
-      radio_stop() or radio_play_next()
-```
-
-### Coordinate Conversion Code
+When multiple modules handle serial, use `Serial.peek()` first to avoid consuming commands meant for others:
 
 ```cpp
-// In builtin_touch.cpp, map area touch handling:
-
-// Normalize to map bounds (full width, no padding)
-float norm_x = portrait_x / 179.0f;  // 0.0 to 1.0
-float norm_y = portrait_y / 579.0f;  // 0.0 to 1.0
-
-// X maps to longitude within current slice
-float lon = slice.lon_min + norm_x * lon_range;
-
-// Y maps to latitude (90° at top to -90° at bottom)
-float lat = 90.0f - norm_y * 180.0f;
-
-// Convert to server's 1024×600 equirectangular space
-int server_x = (int)((lon + 180.0f) / 360.0f * 1024.0f);
-int server_y = (int)((90.0f - lat) / 180.0f * 600.0f);
-```
-
-### Coordinate Conversion (Prototype 2 — Simpler)
-
-In Prototype 2 with external touch panel + physical map:
-
-```cpp
-// USB touch panel reports raw coordinates (e.g., 0-1024, 0-600)
-// These map directly to the server's equirectangular space
-// No slice conversion needed — the physical map shows everything
-
-int server_x = touch_x;  // Direct mapping (after calibration)
-int server_y = touch_y;
-mqtt_publish_touch(server_x, server_y);
-```
-
-Calibration will handle any offset/scale differences between the touch panel and map boundaries.
-
----
-
-## MQTT Protocol (Legacy - Not Used in Standalone Mode)
-
-> **Note:** MQTT is only used if connecting to the optional Docker server. Standalone mode (default) doesn't use MQTT.
-
-### Topics
-
-| Topic | Direction | Payload |
-|-------|-----------|---------|
-| `radiowall/touch` | ESP32 → Server | `{"x": 512, "y": 300, "ts": ...}` |
-| `radiowall/nowplaying` | Server → ESP32 | `{"station": "...", "location": "...", "country": "..."}` |
-| `radiowall/status` | Server → ESP32 | `{"state": "playing"}` / `"stopped"` / `"loading"` / `"error"` |
-| `radiowall/command` | ESP32 → Server | `{"cmd": "stop"}` / `"next"` / `"replay"}` |
-
----
-
-## Hardware Pin Definitions
-
-### Display (QSPI)
-
-| Pin | GPIO | Notes |
-|-----|------|-------|
-| CS | 12 | |
-| SCK | 17 | |
-| D0 | 13 | MOSI |
-| D1 | 18 | MISO |
-| D2 | 21 | ⚠️ Conflicts with Button 2 |
-| D3 | 14 | |
-| RST | 16 | Shared with touch! |
-| BL | 1 | Backlight (PWM) |
-
-### Touch (I2C)
-
-| Pin | GPIO |
-|-----|------|
-| SDA | 15 |
-| SCL | 10 |
-| INT | 11 |
-| RST | 16 | Shared with display! |
-
-### Buttons
-
-| Button | GPIO | Notes |
-|--------|------|-------|
-| Button 1 | 0 | Multi-action (see below) |
-| Button 2 | 21 | ⚠️ DISABLED - conflicts with TFT_QSPI_D2 |
-
-**Button 1 Multi-Action Support:**
-| Action | Timing | Function |
-|--------|--------|----------|
-| Short press | <800ms | Cycle map region |
-| Long press | >800ms hold | STOP playback |
-| Double-tap | <400ms between presses | NEXT station |
-
-**Toggle Switch:** The physical toggle switch on the T-Display-S3-Long board is a **battery power switch**, not a GPIO input. It disconnects/connects battery power.
-
----
-
-## Critical Technical Notes
-
-### ⚠️ Shared Reset Pin (GPIO 16)
-
-Display and touch share the same reset pin. **NEVER reset GPIO 16 after display initialization** — it will crash the display.
-
-```cpp
-// In builtin_touch_init():
-// NOTE: Do NOT reset GPIO 16 here - display_init() already reset it!
-```
-
-### ⚠️ Display Rotation
-
-- Rotation 0 (portrait) is **stable**
-- Rotations 1 and 3 cause display fading/crashing issues
-- All UI code assumes portrait mode (180×640)
-
-### ⚠️ Button 2 Disabled
-
-GPIO 21 is used for both Button 2 and TFT_QSPI_D2 (display data line). Using Button 2 causes display glitches. Use touch-based STOP button instead.
-
-### Library Versions
-
-| Library | Version | Notes |
-|---------|---------|-------|
-| Arduino_GFX | 1.3.7 | In `esp32/lib/` folder |
-| Arduino_DriveBus | 1.1.12 | In `esp32/lib/` folder |
-| PubSubClient | 2.8 | MQTT client |
-| ArduinoJson | 6.21 | JSON parsing |
-
-Newer Arduino_GFX versions (1.6+) require newer ESP32 framework and won't compile.
-
-### Power Management
-
-At startup, configure the SY6970 PMU:
-
-```cpp
-IIC_WriteC8D8(0x6A, 0x00, 0B00111111);  // Disable ILIM, max current
-IIC_WriteC8D8(0x6A, 0x09, 0B01100100);  // Turn off BATFET
+char cmd = Serial.peek();
+if (cmd != 'M' && cmd != 'Y') return;
+String line = Serial.readStringUntil('\n');
 ```
 
 ---
 
 ## Radio.garden API
 
-Unofficial API (no auth required):
+Unofficial, no auth:
 
-```bash
-# List all places (~12,500)
+```
 GET http://radio.garden/api/ara/content/places
-# Response: {"data": {"list": [{"id": "...", "title": "Vienna", 
-#            "country": "Austria", "geo": [16.37, 48.21], "size": 102}]}}
-# NOTE: geo is [LONGITUDE, LATITUDE] not [lat, lon]!
+# response.data.list[]: { id, title, country, geo: [lon, lat], size }
+# NOTE: geo is [LON, LAT], not [lat, lon]
 
-# Get stations at a place
 GET http://radio.garden/api/ara/content/page/{place_id}/channels
+# response.data.content[0].items[]: { page: { url: "/listen/{slug}/{id}", title } }
 
-# Get stream URL (redirects to actual stream)
 GET http://radio.garden/api/ara/content/listen/{station_id}/channel.mp3
+# 302 redirect to the real stream URL
 ```
+
+## LinkPlay API (WiiM)
+
+Base: `https://<wiim-ip>/httpapi.asp?command=<cmd>` (HTTPS, port 443, self-signed cert).
+
+| Command | Description |
+|---|---|
+| `getPlayerStatus` | Status + track info (JSON; `vol` is a string) |
+| `setPlayerCmd:play:<url>` | Play audio URL |
+| `setPlayerCmd:pause` / `resume` / `onepause` / `stop` | Transport |
+| `setPlayerCmd:prev` / `next` | Track nav |
+| `setPlayerCmd:vol:<0-100>` | Volume |
+| `setPlayerCmd:mute:<0|1>` | Mute |
+| `setPlayerCmd:equalizer:<mode>` | EQ: off/classic/popular/jazzy/vocal |
+| `setPlayerCmd:loopmode:<0-4>` | 0=seq, 1=repeat-all, 2=repeat-one, 3=shuffle, 4=shuffle-repeat |
+| `setSleepTimer:<seconds>` | Auto-shutoff (seconds, not minutes) |
+| `getStatusEx` | Extended device info |
+| `multiroom:getSlaveList` / `multiroom:Ungroup` | Multiroom group mgmt |
+
+References: [AndersFluur/LinkPlayApi](https://github.com/AndersFluur/LinkPlayApi), [Arylic HTTP API](https://developer.arylic.com/httpapi/).
 
 ---
 
-## File Structure
-
-```
-RadioWall/
-├── docker-compose.yml
-├── mosquitto/
-│   └── mosquitto.conf
-├── server/
-│   ├── Dockerfile
-│   ├── main.py
-│   ├── radio_garden.py
-│   ├── coordinates.py
-│   ├── upnp_streamer.py
-│   ├── mqtt_handler.py
-│   ├── config.example.yaml
-│   └── requirements.txt
-├── esp32/
-│   ├── platformio.ini
-│   ├── lib/
-│   │   ├── Arduino_GFX-1.3.7/
-│   │   └── Arduino_DriveBus-1.1.12/
-│   └── src/
-│       ├── main.cpp
-│       ├── display.cpp/h
-│       ├── builtin_touch.cpp/h
-│       ├── usb_touch.cpp/h
-│       ├── radio_client.cpp/h      # Radio.garden API client
-│       ├── linkplay_client.cpp/h   # WiiM/LinkPlay control
-│       ├── places_db.cpp/h         # Places database from LittleFS
-│       ├── mqtt_client.cpp/h       # Optional, for server mode
-│       ├── ui_state.cpp/h
-│       ├── world_map.cpp/h
-│       ├── world_map_data.h        # Generated
-│       ├── menu.cpp/h              # 6-item touch menu
-│       ├── favorites.cpp/h         # Favorites (LittleFS JSON)
-│       ├── history.cpp/h           # Playback history (ring buffer)
-│       ├── settings.cpp/h          # Device discovery, multiroom, zoom
-│       ├── theme.h                 # UI theme: colors, fonts, icons
-│       ├── FreeSansBold10pt7b.h    # Custom font (titles, buttons)
-│       ├── FreeSerifBoldItalic12pt7b.h  # Custom font (splash)
-│       ├── button_handler.cpp/h
-│       ├── pins_config.h
-│       └── config.example.h
-├── tools/
-│   ├── generate_map_bitmaps.py
-│   └── requirements.txt
-└── docs/
-    ├── hardware_testing.md
-    └── world_map_implementation.md
-```
-
----
-
-## Common Tasks
-
-### Implement USB Touch Panel (Prototype 2)
-
-1. Connect touch panel via OTG adapter
-2. On Linux PC, use `evtest` to find HID report format
-3. Update `usb_touch.cpp` with proper HID parsing
-4. Test with `USE_BUILTIN_TOUCH 0` in config.h
-5. Build calibration routine
-
-### Simplify Display for Prototype 2
-
-When using external touch panel, the ESP32 display only needs to show:
-- Station name
-- Location
-- Playback status
-- Maybe STOP/NEXT buttons
-
-Remove map rendering code path when `USE_BUILTIN_TOUCH 0`.
-
-### Add a new MQTT command
-
-1. Add handler in `server/main.py` `_handle_command()`
-2. Add case in `esp32/src/main.cpp` if ESP32 needs to send it
-3. Update MQTT topics table in this doc
-
-### Change map slice definitions
-
-1. Edit `esp32/src/ui_state.cpp` `UIState::UIState()` constructor
-2. Regenerate bitmaps if changing longitude ranges: `python tools/generate_map_bitmaps.py`
-
-### Add new display screen
-
-1. Add function in `esp32/src/display.cpp`
-2. Declare in `esp32/src/display.h`
-3. Call from appropriate callback in `main.cpp`
-
-### Debug touch issues
-
-1. Check serial output for `[Touch]` logs
-2. Verify I2C address 0x3B responding
-3. Check interrupt pin GPIO 11
-4. Ensure display initialized first (touch won't work without it!)
-
----
-
-## ESP32 Standalone Mode (Implemented)
-
-The ESP32 now works completely standalone without a server. Key files:
+## Tools
 
 | File | Purpose |
 |------|---------|
-| `radio_client.cpp/h` | Radio.garden API client, station caching |
-| `linkplay_client.cpp/h` | WiiM control via LinkPlay HTTP API |
-| `places_db.cpp/h` | Load places from LittleFS, nearest-city lookup |
+| `tools/compile_places.py` | Download Radio.garden places → `places.bin` (binary, ~634 KB, 52 bytes/place). Header is `RGPL`, version 1, uint32 count. |
+| `tools/generate_map_bitmaps.py` | Natural Earth coastlines → `esp32/src/world_map_data.h` (RLE) + `esp32/data/maps/zoom{2–5}.bin` |
+| `tools/generate_tiled_map.py` | Tileable A3 PDF of the world map for tracing onto glass |
 
-### WiiM / LinkPlay Quirks
-
-**⚠️ WiiM uses HTTPS on port 443, NOT HTTP on port 80!**
-
-```cpp
-// WRONG - will get "Connection reset by peer"
-WiFiClient client;
-client.connect(wiim_ip, 80);
-
-// CORRECT - WiiM uses HTTPS with self-signed certificate
-WiFiClientSecure client;
-client.setInsecure();  // Skip cert verification
-client.connect(wiim_ip, 443);
-```
-
-- Port 80: Connection refused / reset
-- Port 443: Works (HTTPS with self-signed cert)
-- Port 10080: Connection refused
-
-When accessing `https://<wiim-ip>/` in browser, you'll see an SSL warning - click "Advanced" → "Accept Risk" to proceed. This confirms HTTPS is required.
-
-### Radio.garden API Quirks (ESP32)
-
-**1. Chunked Transfer Encoding**
-
-Radio.garden returns chunked responses with HTTP/1.1. ESP32's WiFiClientSecure doesn't handle this well.
-
-```cpp
-// WRONG - may get garbled/incomplete responses
-client.printf("GET %s HTTP/1.1\r\n", path);
-
-// CORRECT - HTTP/1.0 forces non-chunked response
-client.printf("GET %s HTTP/1.0\r\n", path);
-```
-
-**2. Station URL Format**
-
-The station URL in API response is `/listen/{slug}/{id}`, not `/listen/{id}`:
+`places.bin` format (also used as-is by the Linux port):
 
 ```
-URL: /listen/radio-8/9C7CCHgB
-              ↑ slug    ↑ actual ID (use this!)
+Header (16 B): magic "RGPL", uint16 version, uint32 count, 6 B reserved
+Place  (52 B): char[16] id, int16 lat*100, int16 lon*100, char[28] name, char[4] country
 ```
-
-```cpp
-// Extract the ID (second part after /listen/)
-String url = "/listen/radio-8/9C7CCHgB";
-int slugStart = url.indexOf("/listen/") + 8;  // After "/listen/"
-int idStart = url.indexOf("/", slugStart) + 1;  // After slug
-String stationId = url.substring(idStart);  // "9C7CCHgB"
-```
-
-**3. Stream URL is a Redirect**
-
-`/api/ara/content/listen/{id}/channel.mp3` returns HTTP 302 redirect, not the stream.
-Parse the `Location` header to get the actual stream URL.
-
-**4. ArduinoJson Memory**
-
-Station list responses can be large. Use at least 16KB:
-
-```cpp
-DynamicJsonDocument doc(16384);  // 16KB for station lists
-```
-
-### Serial Command Handling
-
-When multiple modules handle serial commands, use `Serial.peek()` to check without consuming:
-
-```cpp
-void my_serial_task() {
-    if (!Serial.available()) return;
-
-    char cmd = Serial.peek();  // Look without consuming
-
-    // Only handle our commands
-    if (cmd != 'M' && cmd != 'Y') {
-        return;  // Let other handlers process it
-    }
-
-    // Now consume and process
-    String line = Serial.readStringUntil('\n');
-    // ...
-}
-```
-
-### Serial Commands (Standalone Mode)
-
-| Command | Description |
-|---------|-------------|
-| `W:<ip>` | Set WiiM IP address |
-| `P:<url>` | Play stream URL directly |
-| `S` | Stop playback |
-| `V:<0-100>` | Set volume |
-| `?` | Get WiiM status (JSON) |
-| `L:<lat>,<lon>` | Lookup nearest place |
-| `D:<count>` | Dump first N places |
-
-### PlatformIO Serial Monitor
-
-To send commands via serial monitor:
-
-```ini
-; platformio.ini
-monitor_filters = esp32_exception_decoder, send_on_enter, time
-monitor_echo = yes
-```
-
-- `send_on_enter`: Press Enter to send the line
-- `monitor_echo`: See what you're typing
-- `time`: Wall-clock timestamps on each log line
-
-### Map Rendering Optimization
-
-Map rendering uses `drawFastHLine()` to draw RLE-compressed horizontal segments.
-
-**Arduino_GFX v1.3.7 library fix**: `writeFastHLine()` and `writeFastVLine()` in `Arduino_TFT.cpp` had optimized code **commented out**, falling back to per-pixel `writePixel()` calls. We uncommented the `writeFillRectPreclipped()` path, which uses one `writeAddrWindow` + one `writeRepeat` per line instead of N individual pixel writes.
-
-**Result**: Map draw time dropped from ~5 seconds to ~150ms.
-
-**Note**: A single-window `writeRepeat` streaming approach (one `writeAddrWindow` for the full 180×580 map) was attempted but produced rendering artifacts (horizontal bars). The QSPI bus's `writeRepeat` doesn't reliably continue within an address window across multiple calls. The per-line `drawFastHLine` approach with the library fix is fast enough.
-
-### Station Count & Next-City Hopping
-
-When pressing NEXT, the station cycles through stations at the current city, then hops to the next nearest city from the original touch point:
-
-- `[Radio] Playing: Station Name (1/5)` → 5 stations available, currently on #1
-- `[Radio] Playing: Station Name (5/5)` → Last station at this city
-- `[Radio] -> Next city: Bratislava, SK` → Exhausted, auto-hopping to next nearest city
-- `[Radio] Playing: Station Name (1/3)` → Now at the new city
-
-The status bar shows `City, CC (idx/total)` — e.g., "Vienna, AT (2/5)". Up to 20 cities can be visited per touch session. Station cache holds up to 100 stations per city.
-
-Many small cities have only 1 station in Radio.garden. NEXT will immediately hop to the next city.
 
 ---
 
-## Future Features
+## Linux Track (TBD)
 
-### ✅ Completed Features
+The Linux port targets an Orange Pi Zero 3 and will likely re-use:
+- `places.bin` as-is (same format)
+- LinkPlay HTTPS client (trivial — `requests.get(url, verify=False)`)
+- Radio.garden client (straightforward `requests` — no chunked-encoding workarounds needed)
+- evdev (`/dev/input/eventN`) for the 55" IR touch frame
 
-#### ~~1. Favorite Stations~~ → DONE (`favorites.cpp/h`)
-
-- Menu → Favorites view with paginated list (6 per page, max 20)
-- Tap left side to play, tap right "x" to delete
-- ADD button saves currently playing station
-- Stored as JSON on LittleFS (`/favorites.json`)
-- Playing a favorite auto-switches to correct map slice + shows marker
-
-#### ~~2. Playback History with Replay~~ ✅ IMPLEMENTED
-
-Implemented in `history.cpp/h`. Ring buffer of 20 stations, auto-recorded on play, deduplication, LittleFS persistence (`/history.json`), paginated list view with tap-to-replay. Accessible via Menu → History.
-
-#### ~~4. Volume Control~~ → DONE (`menu.cpp`, `linkplay_client.cpp`)
-
-- Menu → Volume view with tap-based vertical slider (0-100%)
-- Fetches current volume from WiiM on open
-- Debounced LinkPlay API calls (200ms)
-
-#### ~~5. Pause/Resume~~ → DONE (`menu.cpp`)
-
-- Menu → Pause/Resume toggle
-- Uses `setPlayerCmd:pause` / `setPlayerCmd:resume`
-
-#### 6. Debug Log Display
-
-Show serial-style logs on the ESP32 display:
-
-- **Toggle**: Triple-tap or special button combo
-- **Content**: Last N lines from Serial buffer
-- **Use case**: Debugging without laptop connected
-- **Implementation**: Ring buffer capturing Serial.printf() output
-
-#### ~~7. Network Scan for WiiM Devices~~ ✅ IMPLEMENTED
-
-Implemented in `settings.cpp/h`. Uses ESPmDNS to query `_linkplay._tcp` service. Shows discovered devices in Settings screen. Tap to select primary device, right zone to toggle multiroom grouping. Persisted to `/settings.json`.
-
-#### ~~9. Dynamic Search (Next-City Hopping)~~ → DONE (`radio_client.cpp`, `places_db.cpp`)
-
-- NEXT cycles through all stations at current city
-- When exhausted, auto-hops to next nearest city from original touch point
-- Uses `places_db_find_nearest_excluding()` with visited city list (max 20)
-- Status bar updates with new city name and station count
-- X marker moves to new city location
-
-#### ~~10. Station Count Display~~ → DONE (`display.cpp`, `radio_client.cpp`)
-
-- Status bar line 1: "City, CC (idx/total)" — e.g., "Vienna, AT (2/5)"
-- Status bar line 2: Station name (truncated to 28 chars)
-- `radio_get_station_index()` and `radio_get_total_stations()` accessors
-
-#### ~~11. Display Layout~~ → DONE (`display.cpp`)
-
-- Map: 180×580 full-width (no padding)
-- Status bar: 3 lines — city+count, station name, [STOP][NEXT] buttons
-- Text truncated with "..." at 28 chars
-
-#### ~~13. Sleep Timer~~ → DONE (`menu.cpp`, `linkplay_client.cpp`)
-
-- Menu → Sleep Timer cycles through presets: Off/15/30/60/90 min
-- Uses LinkPlay `setSleepTimer:<seconds>` API
-
-### Completed Planned Features
-
-#### ~~16. Closeup Regional Maps~~ ✅ IMPLEMENTED
-
-Implemented as zoomable maps (1x–5x) in `world_map.cpp` and `generate_map_bitmaps.py`. Each zoom level subdivides slices into tiles with country borders (Natural Earth 1:50m). Zoom level configurable in Settings screen or via double-tap. Map files stored in LittleFS `/maps/zoom{2,3,4,5}.bin`.
-
-#### ~~21. Double-Tap Zoom with 5 Levels~~ ✅ IMPLEMENTED
-
-Implemented in `builtin_touch.cpp`, `ui_state.cpp`, `main.cpp`, `settings.cpp`. Double-tap on the map area cycles zoom 1x→2x→3x→4x→5x→1x, centered on the second tap's position. Three detection paths handle the noisy AXS15231B touch controller (DOWN-based, UP-based, merged-gesture). Single taps are deferred ~500ms to distinguish from double-taps. Touch controller is flushed after zoom callbacks to prevent INT pin lockup.
-
-#### ~~17. Multiroom Support (LinkPlay)~~ ✅ IMPLEMENTED
-
-Implemented in `settings.cpp/h` and `linkplay_client.cpp`. Settings screen shows discovered devices with a "G" toggle for grouping. Grouped device IPs persist in `/settings.json`. `linkplay_client.cpp` sends play commands to all grouped devices.
-
-### Future Features (Long-term)
-
-#### 18. UPnP/DLNA Streaming (Alternative to LinkPlay)
-
-For non-WiiM speakers, implement standard UPnP:
-
-```cpp
-// SOAP request to SetAVTransportURI
-String soap =
-  "<?xml version=\"1.0\"?>"
-  "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">"
-  "<s:Body><u:SetAVTransportURI xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">"
-  "<InstanceID>0</InstanceID>"
-  "<CurrentURI>" + stream_url + "</CurrentURI>"
-  "</u:SetAVTransportURI></s:Body></s:Envelope>";
-```
-
-- **Benefit**: Works with any DLNA speaker
-- **Complexity**: More verbose than LinkPlay, requires SSDP discovery
-- **Priority**: Low (LinkPlay works great for WiiM)
-
-#### 19. Bluetooth Audio Output
-
-Play directly from ESP32 via Bluetooth A2DP:
-
-- **Library**: ESP32-A2DP
-- **Use case**: No WiFi speaker needed, use any BT speaker/headphones
-- **Challenge**: ESP32 must decode audio stream (CPU intensive)
-- **Alternative**: Some BT speakers accept URL via app - could send URL instead
-
-### LinkPlay API Reference
-
-Common commands for WiiM/LinkPlay devices:
-
-| Command | Description |
-|---------|-------------|
-| **Playback** | |
-| `getPlayerStatus` | Current playback status, volume, track info (JSON) |
-| `setPlayerCmd:play:<url>` | Play audio URL |
-| `setPlayerCmd:pause` | Pause playback |
-| `setPlayerCmd:resume` | Resume from pause |
-| `setPlayerCmd:onepause` | Toggle pause/resume |
-| `setPlayerCmd:stop` | Stop playback |
-| `setPlayerCmd:prev` | Previous track |
-| `setPlayerCmd:next` | Next track |
-| `setPlayerCmd:seek:<pos>` | Seek to position (seconds) |
-| **Volume & Audio** | |
-| `setPlayerCmd:vol:<0-100>` | Set volume |
-| `setPlayerCmd:mute:<0\|1>` | Mute/unmute |
-| `setPlayerCmd:equalizer:<mode>` | EQ: off/classic/popular/jazzy/vocal |
-| `getEqualizer` | Get current EQ mode |
-| **Playback Modes** | |
-| `setPlayerCmd:loopmode:<0-4>` | 0=sequence, 1=repeat-all, 2=repeat-one, 3=shuffle, 4=shuffle-repeat |
-| `setPlayerCmd:switchmode:<mode>` | Change audio source |
-| **Presets & Playlists** | |
-| `MCUKeyShortClick:<0-5>` | Trigger preset 1-6 |
-| `setPlayerCmd:playlist:<index>` | Play playlist by index |
-| `playPromptUrl:<url>` | Play notification sound |
-| **Timers** | |
-| `setSleepTimer:<seconds>` | Set auto-shutoff timer |
-| `getSleepTimer` | Get remaining sleep time |
-| **Device Info** | |
-| `getStatusEx` | Extended device status (JSON) |
-| `getStatus` | Device info, firmware, SSID |
-| `setDeviceName:<name>` | Rename device |
-| `reboot` | Restart device |
-| **Multiroom** | |
-| `multiroom:getSlaveList` | List grouped speakers |
-| `multiroom:SlaveKickout:<ip>` | Remove from group |
-| `multiroom:SlaveVolume:<ip>:<vol>` | Per-speaker volume |
-| `multiroom:SlaveMute:<ip>:<0\|1>` | Mute specific speaker |
-| `multiroom:Ungroup` | Disband group |
-| **USB/Local** | |
-| `getLocalPlayList` | List USB/SD files |
-| `setPlayerCmd:playLocalList:<idx>` | Play local file |
-
-**Base URL**: `https://<wiim-ip>/httpapi.asp?command=<cmd>`
-
-**Response format**: Plain text or JSON depending on command
-
-**Sources**: [AndersFluur/LinkPlayApi](https://github.com/AndersFluur/LinkPlayApi), [Arylic HTTP API](https://developer.arylic.com/httpapi/)
+Scaffolding and direction still being decided. The ESP32 firmware is the working spec.
 
 ---
 
-## Feature Feasibility Analysis
+## Repo Layout
 
-> Analysis performed February 2026 based on codebase review and library research.
-
-### Difficulty Legend
-
-| Symbol | Effort | Description |
-|--------|--------|-------------|
-| 🟢 | Easy | Few hours to 1 day. Wraps existing APIs or minor changes. |
-| 🟡 | Medium | 1-3 days. New module or significant refactoring with good library support. |
-| 🟠 | Moderate-Hard | 3-7 days. Multiple new components or complex UI. |
-| 🔴 | Hard | 1-2+ weeks. Missing libraries, architecture changes, or protocol implementation. |
-
-### Feature Ratings
-
-#### 🟠 Moderate-Hard Features
-
-| # | Feature | Lines | Notes |
-|---|---------|-------|-------|
-| 6 | Debug Log Display | ~200 | Ring buffer for Serial, redirect output, triple-tap toggle, overlay rendering. |
-
-#### 🔴 Hard Features
-
-| # | Feature | Lines | Why Hard |
-|---|---------|-------|----------|
-| 18 | UPnP/DLNA Streaming | ~500+ | No ESP32 library for *controlling* DLNA renderers. [SoapESP32](https://github.com/yellobyte/SoapESP32) only browses servers. Must implement SOAP/XML control protocol from scratch. |
-| 19 | Bluetooth A2DP Output | ~1000+ | [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) exists but ESP32 must decode audio streams (MP3/AAC). Need decoder library, significant memory, architecture change. Current design sends URLs to WiiM; BT requires ESP32 to fetch+decode+stream. |
-
-### Notes
-
-- All easy/medium features (#1-#17, #21) are now implemented
-- UPnP/DLNA (#18) and Bluetooth A2DP (#19) are deferred — LinkPlay works well
-- Debug Log Display (#6) is the only remaining non-long-term feature
+```
+RadioWall/
+├── esp32/              # ESP32 firmware (reference track)
+├── linux/              # Linux SBC port (active track — TBD)
+├── tools/              # places compiler, map bitmap gen, tiled PDF
+├── archive/            # early prototype assets + historical design docs
+├── CLAUDE.md
+└── readme.md
+```
