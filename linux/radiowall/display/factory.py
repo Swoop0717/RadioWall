@@ -89,12 +89,6 @@ def _make_st7789():
     # no offset logic — correct for 240x240 and 240x320 panels, wrong
     # for 240x135 sub-panels. Subclass and shift the CASET/RASET
     # window by the panel's offset in controller RAM.
-    #
-    # We also override display() to pass raw bytes to the SPI data()
-    # method instead of list(bytes). Upstream wraps the 97 KB framebuffer
-    # in a Python list of ~97k int objects every frame — 30-50 ms of
-    # pure allocation cost on a Pi 3 B+ that spidev just has to undo.
-    # Bytes go to spidev natively.
     class st7789_135(st7789):
         def set_window(self, x1, y1, x2, y2):
             x1 += _ST7789_1P14_X_OFFSET
@@ -104,11 +98,6 @@ def _make_st7789():
             self.command(0x2A, x1 >> 8, x1 & 0xFF, (x2 - 1) >> 8, (x2 - 1) & 0xFF)
             self.command(0x2B, y1 >> 8, y1 & 0xFF, (y2 - 1) >> 8, (y2 - 1) & 0xFF)
             self.command(0x2C)
-
-        def display(self, image):
-            self.set_window(0, 0, self._w, self._h)
-            image = self.preprocess(image)
-            self.data(image.convert("RGB").tobytes())
 
     # Orientation depends on how the HAT sits in the frame, not on
     # the driver. RADIOWALL_FLIP=1 rotates the image 180° (luma
