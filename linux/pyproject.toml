@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pi = [
-    "python-evdev>=1.7",
+    "evdev>=1.7",
     "gpiod>=2.1",
 ]
 dev = [
