@@ -83,7 +83,6 @@ def _make_st7789():
         width=240,
         height=135,
         rotate=1,
-        bgr=False,
     )
 
 
