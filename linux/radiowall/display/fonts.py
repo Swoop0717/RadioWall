@@ -1,13 +1,19 @@
 """Font loading with platform-aware fallbacks.
 
-Emulator dev on Windows → Arial bold (looks fine).
+Emulator dev on Windows → Arial bold.
 Real Pi → DejaVu Sans (ships with DietPi).
-Fallback → PIL default (ugly but functional).
+Fallback → PIL default.
+
+`fonts_for(height)` returns a FontSet sized relative to the display
+height. That's the display-agnostic entry point — render code should
+ask for a set based on `device.height` rather than importing module
+globals, so the same code looks OK on a 64 px OLED and a 135 px TFT.
 """
 
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 
 from PIL import ImageFont
 
@@ -32,7 +38,26 @@ def load(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-# pre-loaded common sizes
+@dataclass(frozen=True)
+class FontSet:
+    big: ImageFont.ImageFont
+    med: ImageFont.ImageFont
+    small: ImageFont.ImageFont
+    tiny: ImageFont.ImageFont
+
+
+def fonts_for(height: int) -> FontSet:
+    """Font set sized as fractions of display height."""
+    return FontSet(
+        big=load(max(10, int(height * 0.40))),
+        med=load(max(8, int(height * 0.18))),
+        small=load(max(7, int(height * 0.13))),
+        tiny=load(max(6, int(height * 0.11))),
+    )
+
+
+# Backward-compat constants sized for a 64 px display (original SSD1322 target).
+# New code should use fonts_for(device.height) instead.
 BIG = load(28)
 MED = load(14)
 SMALL = load(10)

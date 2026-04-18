@@ -5,6 +5,7 @@ description = "RadioWall — interactive world map radio, Linux SBC port"
 requires-python = ">=3.11"
 dependencies = [
     "luma.oled>=3.14",
+    "luma.lcd>=2.11",
     "luma.emulator>=1.5",
     "pygame>=2.5",
     "pillow>=10.0",
