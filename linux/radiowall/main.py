@@ -1,43 +1,44 @@
-"""Entry point — VFD-style mockup + visualizer demo, button-togglable.
+"""Entry point — VFD-style mockup + visualizer, button-togglable.
 
-Layout is defined in fractions of the device's width/height so the
-same code renders sensibly on anything from a 256x64 mono OLED to a
-240x135 color TFT. Pixel-perfect tuning per display is future work.
-
-Button A (GPIO 23) = cycle screen mode; Button B (GPIO 24) = reset
-to mockup. Buttons are active-low with internal pull-up. On non-Pi
-environments (Windows emulator, missing RPi.GPIO) the button path
-is a no-op.
+On startup, if RADIOWALL_STREAM_URL is set, the Pi fetches that
+stream once and:
+  - serves it at http://<pi>:8000/stream.mp3 (for the WiiM to play)
+  - decodes + FFTs a copy for the reactive visualizer
+See radiowall.audio for the stream hub/decoder/proxy.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 
 from luma.core.render import canvas
 
+from radiowall.audio import decoder, proxy
+from radiowall.audio.hub import StreamHub
 from radiowall.display import fonts, visualizer
 from radiowall.display.factory import make_device
 from radiowall.logging_setup import setup as setup_logging
 
 log = logging.getLogger(__name__)
 
-AMBER = (255, 176, 0)       # classic VFD color
-AMBER_DIM = (110, 75, 0)    # separator / bg accents
+AMBER = (255, 176, 0)
+AMBER_DIM = (110, 75, 0)
 
-SCROLL_PX_PER_FRAME = 2     # pixels per tick; smaller = slower, smoother
+SCROLL_PX_PER_FRAME = 2
+BUTTON_A_PIN = 23
+BUTTON_B_PIN = 24
 
-BUTTON_A_PIN = 23           # top button on the Pi TFT HAT
-BUTTON_B_PIN = 24           # bottom button
+DEFAULT_STREAM_URL = "http://ice1.somafm.com/groovesalad-128-mp3"
+PROXY_PORT = 8000
 
 
 def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
     W, H = device.width, device.height
     pad = max(2, W // 64)
 
-    # mock data that eventually comes from AppState
     top_line = "Vienna  AT  ·  #3 of 12"
     bottom_line = "vol 45  ·  94.0  ·  WiiM"
     scroll = "Radio Wien  ·  Blue in Green  ·  Miles Davis  ·  "
@@ -65,12 +66,6 @@ MODES = [draw_mockup, visualizer.draw]
 
 
 class _Buttons:
-    """Falling-edge detector for the 2 HAT buttons.
-
-    Active-low with internal pull-up; a press is a high->low transition.
-    No-ops gracefully if RPi.GPIO (or its lgpio shim) isn't importable.
-    """
-
     def __init__(self) -> None:
         self._gpio = None
         self._last = (True, True)
@@ -88,7 +83,6 @@ class _Buttons:
                  BUTTON_A_PIN, BUTTON_B_PIN)
 
     def poll(self) -> tuple[bool, bool]:
-        """Return (a_pressed, b_pressed) as one-shot falling-edge events."""
         if self._gpio is None:
             return (False, False)
         a = bool(self._gpio.input(BUTTON_A_PIN))
@@ -97,6 +91,19 @@ class _Buttons:
         b_event = self._last[1] and not b
         self._last = (a, b)
         return (a_event, b_event)
+
+
+def _start_audio_pipeline() -> StreamHub | None:
+    url = os.getenv("RADIOWALL_STREAM_URL", DEFAULT_STREAM_URL).strip()
+    if not url or url.lower() == "off":
+        log.info("audio pipeline disabled (RADIOWALL_STREAM_URL=off)")
+        return None
+
+    hub = StreamHub(url)
+    hub.start()
+    proxy.start(hub, port=PROXY_PORT)
+    decoder.start(hub)
+    return hub
 
 
 def main() -> int:
@@ -115,6 +122,7 @@ def main() -> int:
     fs = fonts.fonts_for(device.height)
 
     buttons = _Buttons()
+    hub = _start_audio_pipeline()
     mode = 0
 
     try:
@@ -129,9 +137,14 @@ def main() -> int:
                 log.info("button B: reset to mockup")
             MODES[mode](device, frame, fs)
             frame += 1
-            time.sleep(0.02)   # target 50 fps, actual capped by SPI+PNG
+            time.sleep(0.02)
     except KeyboardInterrupt:
         pass
+    finally:
+        decoder.stop()
+        proxy.stop()
+        if hub is not None:
+            hub.stop()
 
     return 0
 
