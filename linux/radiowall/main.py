@@ -102,7 +102,7 @@ def _start_audio_pipeline() -> StreamHub | None:
     hub = StreamHub(url)
     hub.start()
     proxy.start(hub, port=PROXY_PORT)
-    decoder.start(hub)
+    decoder.start(url)
     return hub
 
 
