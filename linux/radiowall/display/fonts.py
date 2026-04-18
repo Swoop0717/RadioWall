@@ -63,7 +63,7 @@ def fonts_for(height: int) -> FontSet:
       RADIOWALL_FONT_SMALL  (default 0.20)
       RADIOWALL_FONT_TINY   (default 0.16)
     """
-    big = _env_float("RADIOWALL_FONT_BIG", 0.42)
+    big = _env_float("RADIOWALL_FONT_BIG", 0.35)
     med = _env_float("RADIOWALL_FONT_MED", 0.26)
     small = _env_float("RADIOWALL_FONT_SMALL", 0.20)
     tiny = _env_float("RADIOWALL_FONT_TINY", 0.16)

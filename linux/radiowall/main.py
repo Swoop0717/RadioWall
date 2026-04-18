@@ -40,8 +40,8 @@ def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
         draw.text((pad, pad), top_line, font=fs.small, fill=AMBER)
 
         # --- separators framing the middle scroll band ---
-        top_sep_y = int(H * 0.18)
-        bot_sep_y = int(H * 0.82)
+        top_sep_y = int(H * 0.26)
+        bot_sep_y = int(H * 0.74)
         draw.line((0, top_sep_y, W, top_sep_y), fill=AMBER_DIM)
         draw.line((0, bot_sep_y, W, bot_sep_y), fill=AMBER_DIM)
 
