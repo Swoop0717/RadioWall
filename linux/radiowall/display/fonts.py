@@ -54,7 +54,7 @@ def fonts_for(height: int) -> FontSet:
     layout ever needs to cram more lines on the panel.
     """
     return FontSet(
-        big=load(max(12, int(height * 0.72))),
+        big=load(max(12, int(height * 0.62))),
         med=load(max(10, int(height * 0.26))),
         small=load(max(8, int(height * 0.20))),
         tiny=load(max(7, int(height * 0.16))),

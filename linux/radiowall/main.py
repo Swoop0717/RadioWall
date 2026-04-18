@@ -23,6 +23,9 @@ AMBER = (255, 176, 0)       # classic VFD color
 AMBER_DIM = (110, 75, 0)    # separator / bg accents
 
 
+SCROLL_PX_PER_FRAME = 1    # pixels per tick; smaller = slower, smoother
+
+
 def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
     W, H = device.width, device.height
     pad = max(2, W // 64)
@@ -30,13 +33,7 @@ def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
     # mock data that eventually comes from AppState
     top_line = "Vienna  AT  ·  3/12"
     bottom_line = "vol 45  ·  94.0  ·  WiiM"
-    scroll = "   Radio Wien  ·  Blue in Green  ·  Miles Davis   "
-
-    # character-level scroll for the mockup; when we wire real
-    # data we'll switch to pixel-precise scrolling via textlength
-    scroll_chars_visible = max(8, W // (fs.big.size // 2))
-    offset = frame % len(scroll)
-    visible = (scroll + scroll)[offset:offset + scroll_chars_visible]
+    scroll = "Radio Wien  ·  Blue in Green  ·  Miles Davis  ·  "
 
     with canvas(device) as draw:
         # --- top info band ---
@@ -48,12 +45,16 @@ def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
         draw.line((0, top_sep_y, W, top_sep_y), fill=AMBER_DIM)
         draw.line((0, bot_sep_y, W, bot_sep_y), fill=AMBER_DIM)
 
-        # --- middle: big scrolling line ---
+        # --- middle: pixel-smooth horizontal scroll ---
         band_top = top_sep_y + 2
         band_h = bot_sep_y - top_sep_y
-        # vertically center the text inside the band
         y_text = band_top + max(0, (band_h - fs.big.size) // 2)
-        draw.text((pad, y_text), visible, font=fs.big, fill=AMBER)
+        text_w = max(1, int(draw.textlength(scroll, font=fs.big)))
+        offset_px = (frame * SCROLL_PX_PER_FRAME) % text_w
+        # draw text twice back-to-back so it wraps cleanly regardless
+        # of whether text_w is larger or smaller than the display width
+        draw.text((-offset_px, y_text), scroll, font=fs.big, fill=AMBER)
+        draw.text((-offset_px + text_w, y_text), scroll, font=fs.big, fill=AMBER)
 
         # --- bottom info band ---
         draw.text((pad, bot_sep_y + pad), bottom_line, font=fs.small, fill=AMBER)
@@ -86,7 +87,7 @@ def main() -> int:
         while True:
             draw_mockup(device, frame, fs)
             frame += 1
-            time.sleep(0.15)
+            time.sleep(0.04)   # ~25 fps
     except KeyboardInterrupt:
         pass
 
