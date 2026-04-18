@@ -76,16 +76,13 @@ def _make_st7789():
 
     # Adafruit Mini PiTFT 1.14" (and clones):
     #   DC = GPIO 25, RST = not wired (self-reset via POR), CS = CE0
-    # Controller is 240x320; the visible panel is 240x135 with offsets.
-    # At rotate=1 (landscape), the common offsets are h_offset=40, v_offset=53.
-    # Tweak if the smoke test shows the image shifted.
+    # luma.lcd computes the offsets into the controller's 240x320 frame
+    # internally from (width, height, rotate).
     return st7789(
         spi(port=0, device=0, gpio_DC=25, gpio_RST=None, bus_speed_hz=40_000_000),
         width=240,
         height=135,
         rotate=1,
-        h_offset=40,
-        v_offset=53,
         bgr=False,
     )
 
