@@ -15,6 +15,7 @@ import time
 from luma.core.render import canvas
 
 from radiowall.display.factory import make_device
+from radiowall.logging_setup import setup as setup_logging
 
 
 COLORS = [
@@ -27,6 +28,7 @@ COLORS = [
 
 
 def main() -> int:
+    setup_logging()
     device = make_device()
     W, H = device.width, device.height
     print(f"device: {W}x{H}")

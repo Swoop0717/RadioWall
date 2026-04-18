@@ -8,12 +8,16 @@ same code renders sensibly on anything from a 256x64 mono OLED to a
 from __future__ import annotations
 
 import argparse
+import logging
 import time
 
 from luma.core.render import canvas
 
 from radiowall.display import fonts
 from radiowall.display.factory import make_device
+from radiowall.logging_setup import setup as setup_logging
+
+log = logging.getLogger(__name__)
 
 AMBER = (255, 176, 0)       # classic VFD color
 AMBER_DIM = (110, 75, 0)    # separator / bg accents
@@ -84,7 +88,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    setup_logging()
+    log.info("radiowall starting")
+
     device = make_device(mock=args.emulate or None, scale=args.scale)
+    log.info("display ready: %dx%d", device.width, device.height)
     fs = fonts.fonts_for(device.height)
 
     try:
