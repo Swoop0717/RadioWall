@@ -59,9 +59,21 @@ class _Decoder:
 
         self._stop.clear()
         self._sub = self._hub.subscribe()
+        # content-type-based format hint avoids probe delay and silent
+        # failures when the stream header is split across chunks
+        ctype = self._hub.content_type.lower()
+        fmt_hint: list[str] = []
+        if "mpeg" in ctype or "mp3" in ctype:
+            fmt_hint = ["-f", "mp3"]
+        elif "aac" in ctype:
+            fmt_hint = ["-f", "aac"]
+        elif "ogg" in ctype:
+            fmt_hint = ["-f", "ogg"]
+
         self._proc = subprocess.Popen(
             [
-                "ffmpeg", "-loglevel", "error", "-nostdin",
+                "ffmpeg", "-loglevel", "warning", "-nostdin",
+                *fmt_hint,
                 "-i", "pipe:0",
                 "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE),
                 "pipe:1",
@@ -75,9 +87,13 @@ class _Decoder:
             target=self._writer, name="decoder-writer", daemon=True)
         self._reader_thread = threading.Thread(
             target=self._reader, name="decoder-reader", daemon=True)
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, name="decoder-stderr", daemon=True)
         self._writer_thread.start()
         self._reader_thread.start()
-        log.info("decoder started")
+        self._stderr_thread.start()
+        log.info("decoder started (format hint: %s)",
+                 " ".join(fmt_hint) if fmt_hint else "autodetect")
 
     def stop(self) -> None:
         self._stop.set()
@@ -92,6 +108,16 @@ class _Decoder:
     def get_bands(self) -> list[float]:
         with self._lock:
             return list(self._smooth)
+
+    def _drain_stderr(self) -> None:
+        """Log ffmpeg stderr line-by-line; otherwise its pipe buffer
+        fills at ~64 KB and ffmpeg blocks (which looks like an early
+        exit from our side)."""
+        assert self._proc is not None and self._proc.stderr is not None
+        for raw in iter(self._proc.stderr.readline, b""):
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if line:
+                log.info("ffmpeg: %s", line)
 
     def _writer(self) -> None:
         assert self._proc is not None and self._proc.stdin is not None
