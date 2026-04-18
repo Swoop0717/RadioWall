@@ -1,19 +1,21 @@
-"""Subscribe to a StreamHub, decode via ffmpeg, expose FFT bands.
+"""Decode the radio stream and expose FFT-banded levels.
 
-Hub → ffmpeg stdin (writer thread) → ffmpeg stdout (reader thread) →
-FFT on fixed-size windows → smoothed band levels → `get_bands()`.
+Runs `ffmpeg -i <url> -f s16le -ac 1 -ar 44100 -` on its own
+connection to the stream and FFTs the PCM output. We used to pipe
+bytes from the StreamHub into ffmpeg's stdin to avoid a second
+WAN connection, but that turned out to be hard to keep alive —
+ffmpeg wants a stable input and early stdin-pipe EOFs silently
+killed the process. The extra ~16 KB/s of upstream traffic for a
+second fetch is irrelevant here.
 
-ffmpeg handles whatever codec the radio sends (MP3, AAC, etc.) and
-resamples to 16-bit mono PCM at 44.1 kHz for a predictable FFT.
-
-Visualizer calls `get_bands()` every frame; missing/not-running
-capture returns None and visualizer falls back to its sine animation.
+`get_bands()` returns the latest smoothed levels (0..1 per band)
+or None if the decoder isn't running (missing ffmpeg, missing
+numpy, no URL configured).
 """
 
 from __future__ import annotations
 
 import logging
-import queue
 import shutil
 import subprocess
 import threading
@@ -23,8 +25,6 @@ try:
     import numpy as np
 except ImportError:
     np = None  # type: ignore
-
-from radiowall.audio.hub import StreamHub
 
 log = logging.getLogger(__name__)
 
@@ -38,15 +38,14 @@ NORMALIZE_GAIN = 1.6
 
 
 class _Decoder:
-    def __init__(self, hub: StreamHub) -> None:
-        self._hub = hub
-        self._sub: Optional[queue.Queue] = None
+    def __init__(self, url: str) -> None:
+        self._url = url
         self._proc: Optional[subprocess.Popen] = None
         self._stop = threading.Event()
         self._smooth = [0.0] * NUM_BANDS
         self._lock = threading.Lock()
-        self._writer_thread: Optional[threading.Thread] = None
         self._reader_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         if np is None:
@@ -58,47 +57,29 @@ class _Decoder:
             return
 
         self._stop.clear()
-        self._sub = self._hub.subscribe()
-        # content-type-based format hint avoids probe delay and silent
-        # failures when the stream header is split across chunks
-        ctype = self._hub.content_type.lower()
-        fmt_hint: list[str] = []
-        if "mpeg" in ctype or "mp3" in ctype:
-            fmt_hint = ["-f", "mp3"]
-        elif "aac" in ctype:
-            fmt_hint = ["-f", "aac"]
-        elif "ogg" in ctype:
-            fmt_hint = ["-f", "ogg"]
-
         self._proc = subprocess.Popen(
             [
                 "ffmpeg", "-loglevel", "warning", "-nostdin",
-                *fmt_hint,
-                "-i", "pipe:0",
+                "-reconnect", "1", "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-i", self._url,
                 "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE),
                 "pipe:1",
             ],
-            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
         )
-        self._writer_thread = threading.Thread(
-            target=self._writer, name="decoder-writer", daemon=True)
         self._reader_thread = threading.Thread(
             target=self._reader, name="decoder-reader", daemon=True)
         self._stderr_thread = threading.Thread(
             target=self._drain_stderr, name="decoder-stderr", daemon=True)
-        self._writer_thread.start()
         self._reader_thread.start()
         self._stderr_thread.start()
-        log.info("decoder started (format hint: %s)",
-                 " ".join(fmt_hint) if fmt_hint else "autodetect")
+        log.info("decoder started on %s", self._url)
 
     def stop(self) -> None:
         self._stop.set()
-        if self._sub is not None:
-            self._hub.unsubscribe(self._sub)
         if self._proc and self._proc.poll() is None:
             try:
                 self._proc.kill()
@@ -110,32 +91,13 @@ class _Decoder:
             return list(self._smooth)
 
     def _drain_stderr(self) -> None:
-        """Log ffmpeg stderr line-by-line; otherwise its pipe buffer
-        fills at ~64 KB and ffmpeg blocks (which looks like an early
-        exit from our side)."""
+        """Read stderr line-by-line and log it; prevents the 64 KB
+        kernel pipe buffer from filling up and blocking ffmpeg."""
         assert self._proc is not None and self._proc.stderr is not None
         for raw in iter(self._proc.stderr.readline, b""):
             line = raw.decode("utf-8", errors="replace").rstrip()
             if line:
                 log.info("ffmpeg: %s", line)
-
-    def _writer(self) -> None:
-        assert self._proc is not None and self._proc.stdin is not None
-        try:
-            while not self._stop.is_set():
-                try:
-                    chunk = self._sub.get(timeout=1)  # type: ignore[union-attr]
-                except queue.Empty:
-                    continue
-                try:
-                    self._proc.stdin.write(chunk)
-                except BrokenPipeError:
-                    return
-        finally:
-            try:
-                self._proc.stdin.close()
-            except Exception:
-                pass
 
     def _reader(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -152,7 +114,9 @@ class _Decoder:
         while not self._stop.is_set():
             raw = self._proc.stdout.read(bytes_per_chunk)
             if len(raw) < bytes_per_chunk:
-                log.info("decoder pcm stream ended")
+                rc = self._proc.poll()
+                log.info("decoder pcm stream ended (ffmpeg rc=%s, got %d/%d bytes)",
+                         rc, len(raw), bytes_per_chunk)
                 return
 
             samples = (
@@ -175,10 +139,10 @@ class _Decoder:
 _singleton: Optional[_Decoder] = None
 
 
-def start(hub: StreamHub) -> None:
+def start(url: str) -> None:
     global _singleton
     stop()
-    _singleton = _Decoder(hub)
+    _singleton = _Decoder(url)
     _singleton.start()
 
 
