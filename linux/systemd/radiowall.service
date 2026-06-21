@@ -1,0 +1,22 @@
+[Unit]
+Description=RadioWall — interactive world map radio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runtime settings (display flip, fonts, stream URL, mirror). The leading
+# "-" makes the file optional — the app falls back to code defaults if it's
+# absent. Copy linux/config.example.env there and edit per device.
+EnvironmentFile=-/etc/radiowall.env
+# Default DietPi install clones to /root as the root user (needs GPIO/SPI).
+# Adjust both paths + add User= if you installed elsewhere.
+WorkingDirectory=/root/RadioWall/linux
+ExecStart=/root/RadioWall/linux/.venv/bin/python -m radiowall
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
