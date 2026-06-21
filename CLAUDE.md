@@ -19,9 +19,15 @@ Working prototypes on ESP32-S3. Tagged `v1.0-prototype1` for P1. This track is *
 - **P1** (`env:t-display-s3-long`): LILYGO T-Display-S3-Long. Built-in 3.4" AMOLED + I2C touch. Full standalone firmware: map UI, favorites, history, settings, volume, sleep timer, multiroom, zoom.
 - **P2** (`env:usb-touch`): ESP32-S3 + 55" IR touch frame over USB Host. Serial replaced by WiFi UDP logging (port 9999). Control zone: `server_y > 550` = play/pause.
 
-### [linux/](linux/) — Linux SBC port (active, scaffolding in progress)
+### [linux/](linux/) — Linux SBC port (active)
 
-Target: Orange Pi Zero 3 (Allwinner H618). Port the same standalone logic to Python on a real Linux userspace — easier UI, faster iteration, IR frame shows up as `/dev/input/eventN`, no LittleFS/PSRAM gymnastics. Nothing committed yet beyond this branch.
+Porting the standalone logic to Python on real Linux userspace — easier UI, faster iteration, IR frame as `/dev/input/eventN`, no LittleFS/PSRAM gymnastics.
+
+**Running now** on a **Raspberry Pi 3 B+ / DietPi (Trixie)** with a 1.14" 240×135 **ST7789** TFT: VFD-style "now playing" mockup + four audio-reactive visualizers (button A cycles), an HTTP proxy that re-serves the stream to the WiiM (`:8000`) while ffmpeg→FFT feeds the visualizer, under a **systemd** service (autostart; settings in `/etc/radiowall.env`). Pi is at `192.168.0.102` (Ethernet), root SSH via key.
+
+**Not yet ported:** the actual radio logic (LinkPlay, Radio.garden, `places.bin` lookup, touch→city→play state machine) — held until the final hardware (SSD1322 256×64 OLED + EC11 encoders + 55" IR frame) is wired and tested. The screen is still a hardcoded mockup.
+
+**Original target was the Orange Pi Zero 3W (Allwinner H618)** — currently won't boot; parked pending a USB power tester + CP2102 serial console to diagnose. Code is board-agnostic. See `linux/README.md` for the full setup + lessons (Ethernet-first install, `python3-rpi-lgpio` GPIO backend, SPI at `/boot/firmware/config.txt`).
 
 ## How It Works (both tracks)
 

@@ -1,11 +1,15 @@
 # RadioWall Linux Port — Plan
 
-Target hardware: Orange Pi Zero 3 (Allwinner H618), 1–4 GB RAM, DietPi.
-Dev hardware: Windows laptop with WSL2 / native Python.
+Current hardware: **Raspberry Pi 3 B+ (1 GB), DietPi (Debian Trixie)**.
+Original target: Orange Pi Zero 3W (Allwinner H618) — **parked, won't boot**
+(awaiting a USB power tester + CP2102 serial console to diagnose). The Python
+code is board-agnostic; moving back is mostly SPI bus/device + GPIO pinouts.
+Dev hardware: laptop with native Python (pygame emulator).
 Speaker: WiiM Amp Pro at `192.168.0.33`.
-Display: 3.12" SSD1322 256×64 OLED over SPI.
+Display: target is a 3.12" SSD1322 256×64 OLED over SPI; current dev panel is a
+1.14" 240×135 ST7789 TFT (driver done, `RADIOWALL_DISPLAY=st7789`).
 Touch: 55" IR frame via USB HID (shows up as `/dev/input/eventN`).
-Inputs: car radio shell with rotary encoders + MX switches (hand-wired to GPIO).
+Inputs: EC11 rotary encoders + buttons (incl. 2 on the ST7789 TFT, GPIO 23/24).
 
 ## Goals & Non-Goals
 

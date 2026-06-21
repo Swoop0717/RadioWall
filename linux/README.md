@@ -4,7 +4,36 @@ See [PLAN.md](PLAN.md) for the full plan and Build Order.
 
 ## Current state
 
-Scaffold + pygame emulator mockup of the "now playing" screen. Real display driver (ST7789 1.14") in progress.
+Running on real hardware: a **Raspberry Pi 3 B+ / DietPi (Trixie)** drives a
+1.14" 240×135 **ST7789** TFT showing the VFD-style "now playing" mockup plus
+four audio-reactive visualizers (cycle with button A). An HTTP proxy re-serves
+the chosen stream to the WiiM at `:8000/stream.mp3` while a local ffmpeg→FFT
+path feeds the visualizer. Runs under **systemd** (autostart on boot); settings
+live in `/etc/radiowall.env`.
+
+Not yet ported from the ESP32 firmware: the actual radio logic (LinkPlay
+client, Radio.garden client, `places.bin` nearest-city lookup, touch→city→play
+state machine). The screen content is still a hardcoded mockup. See PLAN.md.
+
+> **Platform note:** PLAN.md originally targeted an **Orange Pi Zero 3W**
+> (Allwinner H618). It currently **won't boot** — diagnosis is blocked pending a
+> **USB power tester** (rule out a weak-supply/brown-out) and a **CP2102
+> USB-to-TTL adapter** (to get a serial boot console and see where it dies),
+> both on order. Development moved to the Raspberry Pi 3 B+ to keep progress
+> going. The Orange Pi is **parked, not abandoned** — the Python code is
+> board-agnostic, so it can move back once the boot issue is sorted (expect
+> different SPI device numbering and GPIO pinouts; see "Porting to another SBC").
+
+## Parts list
+
+| Role | Part |
+|---|---|
+| Compute | Raspberry Pi 3 B+ (1 GB) + microSD + **5.1 V / 2.5 A** PSU |
+| Dev display | 1.14" 240×135 ST7789 "Pi TFT" (Adafruit Mini PiTFT or clone, 2 buttons) |
+| Target display | TZT 3.12" 256×64 **SSD1322** SPI OLED |
+| Inputs | EC11 rotary encoders · momentary buttons · 55" IR touch frame (USB) |
+| Speaker | WiiM Amp Pro (`192.168.0.33`) — streams audio; the Pi only coordinates |
+| Enclosure | Car-radio shell (planned) |
 
 ## Run the emulator (Windows / any dev machine)
 
@@ -33,9 +62,20 @@ Verified on: **Raspberry Pi 3 B+ (1 GB), DietPi (Debian Trixie, Python 3.13), mi
 
 ### 2. Flash DietPi + first boot
 
+> **Do the first boot over Ethernet, not WiFi.** The Pi 3 B+'s built-in WiFi is
+> too weak/flaky to survive the DietPi first-run install — it stalls on the
+> internet-connectivity check (`ping 9.9.9.9` fails) and never finishes, leaving
+> you stuck on temporary Dropbear with no `python3`. Plug in a cable and set, in
+> `dietpi.txt`: `AUTO_SETUP_NET_ETHERNET_ENABLED=1` and
+> `AUTO_SETUP_NET_WIFI_ENABLED=0`. Switch to WiFi later from inside if you want.
+>
+> Also note: **`dietpi.txt` is only read on the *first* boot.** If you need to
+> change network settings after that, the reliable fix is to **re-flash** — just
+> editing the file and rebooting won't re-apply it.
+
 1. Flash DietPi image to the microSD.
-2. Edit `dietpi-wifi.txt` and `dietpi.txt` on the boot partition: fill in WiFi SSID/password and set a hostname (e.g. `radiowall`).
-3. Boot — self-install takes ~5 min.
+2. Edit `dietpi.txt` on the boot partition: set `AUTO_SETUP_NET_ETHERNET_ENABLED=1`, `AUTO_SETUP_NET_WIFI_ENABLED=0`, a hostname (e.g. `radiowall`), `AUTO_SETUP_SSH_SERVER_INDEX=-2` (OpenSSH), and `AUTO_SETUP_AUTOMATED=1`. (For WiFi instead, fill in `dietpi-wifi.txt` — but see the warning above.)
+3. Boot — self-install takes ~5–10 min and reboots itself once or twice.
 4. Find the Pi on your LAN: `ping radiowall.local` or check your router's DHCP list.
 5. `ssh root@<ip>` — default password is whatever you set during flash.
 
@@ -53,9 +93,19 @@ Use apt for heavy wheels that would otherwise compile from source for 10+ minute
 
 ```bash
 apt update
-apt install -y git python3-pip python3-venv \
-    python3-pygame python3-pil python3-yaml python3-requests python3-evdev
+apt install -y git python3 python3-pip python3-venv \
+    python3-pygame python3-pil python3-yaml python3-requests python3-evdev \
+    python3-rpi-lgpio python3-spidev ffmpeg
 ```
+
+Three of those are easy to forget and each fails in a confusing way later:
+- **`python3-rpi-lgpio`** — luma needs an `RPi.GPIO`-compatible module to drive
+  the display's DC/backlight pins. On Trixie use the **lgpio-backed** shim, not
+  classic `python3-rpi.gpio` (they conflict; the classic one misbehaves on
+  recent kernels). Without it, display init throws.
+- **`python3-spidev`** — the SPI transport luma uses. Missing → `No module named spidev`.
+- **`ffmpeg`** — the audio decoder shells out to it for the visualizer. Missing
+  is non-fatal (the app logs a warning and runs without the visualizer).
 
 ### 5. Clone + install RadioWall
 
@@ -76,6 +126,14 @@ pip install -e .[pi]
 ```bash
 dietpi-config
 # Advanced Options → SPI state → On → back out → reboot
+```
+
+Or non-interactively — append `dtparam=spi=on` to the firmware config. **On
+Trixie this is `/boot/firmware/config.txt`, not `/boot/config.txt`:**
+
+```bash
+grep -q '^dtparam=spi=on' /boot/firmware/config.txt || echo 'dtparam=spi=on' >> /boot/firmware/config.txt
+reboot
 ```
 
 Confirm after reboot:
@@ -106,6 +164,23 @@ python -m radiowall
 RADIOWALL_EMULATE=1 python -m radiowall
 ```
 
+### 9. Autostart on boot (systemd)
+
+Run it as a managed service so it starts on boot and restarts on crash.
+Per-device settings (flip, fonts, stream URL, mirror) go in `/etc/radiowall.env`:
+
+```bash
+cp config.example.env /etc/radiowall.env       # then edit
+sudo cp systemd/radiowall.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now radiowall
+journalctl -u radiowall -f                      # live logs
+```
+
+The unit's `EnvironmentFile=-/etc/radiowall.env` is optional (the `-` prefix),
+and the default paths assume a root install at `/root/RadioWall/linux` — adjust
+`WorkingDirectory`/`ExecStart`/`User` if you cloned elsewhere.
+
 ## Pitfalls we hit (and how to spot them)
 
 | Symptom | Likely cause | Fix |
@@ -116,6 +191,12 @@ RADIOWALL_EMULATE=1 python -m radiowall
 | `pip install` fails on `evdev` with "linux/input.h missing" | `evdev` needs kernel headers to compile | `apt install python3-evdev` (not `linux-headers`) |
 | `/dev/spidev0.*` missing after enabling SPI | Module not loaded yet | `reboot`, then check `lsmod | grep spi` |
 | Pi unreachable after plugging in HAT | Misaligned header (shorted rails) or under-volt when display draws current | Power off, reseat HAT on correct pins (1–26), re-check PSU |
+| First-run install never finishes; stuck on Dropbear, no `python3` | DietPi's connectivity check failing over flaky WiFi | Do the first boot on **Ethernet** (see warning above); re-flash with `AUTO_SETUP_NET_ETHERNET_ENABLED=1` |
+| Edited `dietpi.txt` but the change didn't apply | It's only read on the *first* boot | **Re-flash** to re-apply network/automation settings |
+| Display init throws on `RPi.GPIO` / `No module named RPi` | luma's GPIO backend missing on Trixie | `apt install python3-rpi-lgpio` (lgpio-backed, **not** classic `python3-rpi.gpio`) |
+| Display init throws `No module named spidev` | SPI Python transport missing | `apt install python3-spidev` |
+| Visualizer flat / `ffmpeg not installed; decoder disabled` | no ffmpeg | `apt install ffmpeg`, then restart the service |
+| Screen upside down | depends how the panel sits | set `RADIOWALL_FLIP=1` (in `/etc/radiowall.env`) |
 
 ## Porting to another SBC
 
@@ -134,14 +215,27 @@ The Python code is portable; hardware config (SPI bus/device, GPIO pins for butt
 linux/
 ├── PLAN.md              ← master plan, build order, design decisions
 ├── README.md            ← this file
+├── config.example.env   ← runtime settings template → /etc/radiowall.env
 ├── pyproject.toml
+├── systemd/
+│   └── radiowall.service
 └── radiowall/
-    ├── __init__.py
-    ├── main.py          ← entry point, VFD-style mockup
-    └── display/
-        ├── __init__.py
-        ├── factory.py   ← picks emulator / SSD1322 / ST7789 driver
-        └── fonts.py     ← platform-aware font loading
+    ├── main.py          ← entry point: mockup + visualizer loop, buttons
+    ├── logging_setup.py
+    ├── display/
+    │   ├── factory.py   ← picks emulator / st7789 / ssd1322 by env
+    │   ├── fonts.py     ← height-relative, env-tunable font sizes
+    │   ├── visualizer.py← bars / mirror / radial / wave
+    │   └── mirror.py    ← broadcast frames to the LAN viewer
+    ├── audio/
+    │   ├── hub.py       ← fetch upstream stream once, fan out
+    │   ├── proxy.py     ← re-serve to the WiiM at :8000
+    │   └── decoder.py   ← ffmpeg → PCM → FFT for the visualizer
+    └── tools/
+        ├── display_mirror.py  ← laptop-side frame viewer
+        └── udp_log_listen.py  ← laptop-side log viewer
 ```
 
-Everything else (Radio.garden, LinkPlay, input handling, state machine, logging, status API) comes next — see PLAN.md build order.
+Still to come (held until final hardware is wired): Radio.garden, LinkPlay,
+`places.bin` lookup, evdev touch/encoder input, the state machine — see PLAN.md
+build order.
