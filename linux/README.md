@@ -35,6 +35,38 @@ state machine). The screen content is still a hardcoded mockup. See PLAN.md.
 | Speaker | WiiM Amp Pro (`192.168.0.33`) — streams audio; the Pi only coordinates |
 | Enclosure | Car-radio shell (planned) |
 
+## Inputs (GPIO wiring)
+
+**Rotary encoder (EC11 / KY-040)** — driver in `radiowall/input/encoder.py`.
+Tested wiring on the Pi 3 B+ with the ST7789 HAT still attached (uses the spare
+pins poking out past the HAT; `+` left unwired, internal pull-ups do the job):
+
+| KY-040 | → Pi **physical pin** | BCM |
+|---|---|---|
+| CLK | 40 | GPIO21 |
+| DT | 38 | GPIO20 |
+| SW | 36 | GPIO16 |
+| GND | 39 | — |
+| + | *unwired* | — |
+
+Smoke-test a (replacement) encoder without touching the display:
+
+```bash
+.venv/bin/python -m radiowall.input.encoder   # prints CW/CCW/PRESS; Ctrl+C
+```
+
+The driver debounces the switch and adds a **rotation guard** (the debounce
+timer resets while turning) so electrical coupling can't fake a press.
+
+> **Gotcha:** a cheap/worn KY-040 can emit *real* switch closures while you
+> turn it — the shaft mechanically tickles its own button. No software filter
+> fixes that; swap the encoder. Rotation reading is unaffected. (We burned a
+> while on this with one bad unit — reseating wires and gentle turning ruled
+> out connection/coupling; it was the encoder.)
+
+The two ST7789 HAT buttons are on GPIO 23/24 (handled in `main.py`). The 55" IR
+touch frame is USB and appears as `/dev/input/eventN` (evdev) — not yet wired in.
+
 ## Run the emulator (Windows / any dev machine)
 
 Requires Python 3.11+.
