@@ -5,16 +5,17 @@ so the main render loop (which only ticks ~50 Hz) never misses fast turns.
 Call `poll()` each frame to drain accumulated rotation steps and presses.
 
 Proven wiring on the Pi 3 B+ dev rig — a KY-040 with the `+` pin left
-unconnected, relying on the Pi's internal pull-ups (all the 3.3 V header pins
-sit under the ST7789 HAT):
+unconnected, relying on internal pull-ups (all the 3.3 V header pins sit
+under the ST7789 HAT). Identical physical pins on the Orange Pi Zero 3W;
+the per-board GPIO numbers + library come from `radiowall.hw.board`:
 
-    KY-040    Pi physical pin   BCM
-    ------    ---------------   ------
-    CLK       40                GPIO21
-    DT        38                GPIO20
-    SW        36                GPIO16
-    GND       39                —
-    +         (leave unwired)   —
+    KY-040    physical pin   Pi BCM    OPi Zero3W line
+    ------    ------------   ------    ---------------
+    CLK       40             GPIO21    39  (PB7)
+    DT        38             GPIO20    40  (PB8)
+    SW        36             GPIO16    98  (PD2)
+    GND       39             —         —
+    +         (leave unwired)
 
 The switch read uses a debounce **plus a rotation guard**: while the dial is
 actively turning, the debounce timer keeps resetting, so electrical coupling
@@ -35,19 +36,17 @@ from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-try:
-    import RPi.GPIO as GPIO  # lgpio-backed on Trixie (python3-rpi-lgpio)
-    _HAVE_GPIO = True
-except ImportError:
-    _HAVE_GPIO = False
+from radiowall.hw.board import get_gpio, get_profile
 
 
 @dataclass(frozen=True)
 class EncoderPins:
-    """BCM (GPIO) pin numbers. Defaults match the proven dev-rig wiring."""
-    clk: int = 21   # physical pin 40
-    dt: int = 20    # physical pin 38
-    sw: int = 16    # physical pin 36
+    """GPIO numbers in the board's native scheme (BCM on the Pi, gpiochip
+    line offsets on the Orange Pi). Same physical pins 40/38/36 either way;
+    None → take the number from the board profile."""
+    clk: int | None = None   # physical pin 40
+    dt: int | None = None    # physical pin 38
+    sw: int | None = None    # physical pin 36
 
 
 class RotaryEncoder:
@@ -64,7 +63,13 @@ class RotaryEncoder:
     def __init__(self, pins: EncoderPins | None = None, *,
                  debounce_s: float = 0.030, reverse: bool = False,
                  poll_interval_s: float = 0.0008) -> None:
-        self.pins = pins or EncoderPins()
+        profile = get_profile()
+        pins = pins or EncoderPins()
+        self.pins = EncoderPins(
+            clk=pins.clk if pins.clk is not None else profile.encoder_clk,
+            dt=pins.dt if pins.dt is not None else profile.encoder_dt,
+            sw=pins.sw if pins.sw is not None else profile.encoder_sw,
+        )
         self.debounce_s = debounce_s
         self.reverse = reverse
         self.poll_interval_s = poll_interval_s
@@ -75,8 +80,9 @@ class RotaryEncoder:
         self._gpio = None
         self._running = False
 
-        if not _HAVE_GPIO:
-            log.info("RPi.GPIO unavailable; rotary encoder disabled")
+        GPIO = get_gpio()
+        if GPIO is None:
+            log.info("no GPIO backend on this host; rotary encoder disabled")
             return
 
         GPIO.setwarnings(False)

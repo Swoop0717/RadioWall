@@ -4,25 +4,38 @@ See [PLAN.md](PLAN.md) for the full plan and Build Order.
 
 ## Current state
 
-Running on real hardware: a **Raspberry Pi 3 B+ / DietPi (Trixie)** drives a
-1.14" 240×135 **ST7789** TFT showing the VFD-style "now playing" mockup plus
-four audio-reactive visualizers (cycle with button A). An HTTP proxy re-serves
-the chosen stream to the WiiM at `:8000/stream.mp3` while a local ffmpeg→FFT
-path feeds the visualizer. Runs under **systemd** (autostart on boot); settings
-live in `/etc/radiowall.env`.
+Running on the **final target hardware** since 2026-07-12: an **Orange Pi
+Zero 3W (Allwinner A733)** drives the 3.12" 256×64 **SSD1322** OLED
+(`RADIOWALL_DISPLAY=ssd1322`) with the VFD-style "now playing" mockup plus
+four audio-reactive visualizers. An HTTP proxy re-serves the chosen stream to
+the WiiM at `:8000/stream.mp3` while a local ffmpeg→FFT path feeds the
+visualizer. Board is at `192.168.0.5`, user `orangepi`, key SSH.
+
+The previous dev rig — **Raspberry Pi 3 B+ / DietPi (Trixie)** with the 1.14"
+240×135 **ST7789** HAT, systemd service, `/etc/radiowall.env` — still works
+unchanged (board profiles auto-detect; see below) and remains the fallback.
+
+Mode cycling was HAT-button-only, so on the Orange Pi the visualizers are
+unreachable until the EC11 encoder is wired into `main.py` (next step).
 
 Not yet ported from the ESP32 firmware: the actual radio logic (LinkPlay
 client, Radio.garden client, `places.bin` nearest-city lookup, touch→city→play
 state machine). The screen content is still a hardcoded mockup. See PLAN.md.
 
 > **Platform note:** PLAN.md originally targeted an **Orange Pi Zero 3W**
-> (Allwinner H618). It currently **won't boot** — diagnosis is blocked pending a
-> **USB power tester** (rule out a weak-supply/brown-out) and a **CP2102
-> USB-to-TTL adapter** (to get a serial boot console and see where it dies),
-> both on order. Development moved to the Raspberry Pi 3 B+ to keep progress
-> going. The Orange Pi is **parked, not abandoned** — the Python code is
-> board-agnostic, so it can move back once the boot issue is sorted (expect
-> different SPI device numbering and GPIO pinouts; see "Porting to another SBC").
+> (Allwinner **A733** — not H618 as earlier notes said; see the user manual PDF
+> in this dir). **Resolved 2026-07-12: the board was never broken.** It boots
+> the official Orange Pi Ubuntu Jammy image (kernel 6.6.x-sun60iw2) fine — it
+> just had no WiFi configured and no display attached, so it looked dead.
+> Diagnosed via serial console: debug UART is on 40-pin header **pin 8 = board
+> TX, pin 10 = board RX, pin 6 = GND** (same positions as a Raspberry Pi),
+> 115200 8N1, 3.3 V. Cross-connect TX↔RX; if silent, swap the two data wires
+> (adapter silkscreens lie). Power: the PWRIN Type-C does **no PD negotiation**
+> — use a plain 5 V/3 A supply via USB-A→C cable, not a PD charger with C-to-C.
+> Development continues on the Raspberry Pi 3 B+ for now; the Python code is
+> board-agnostic, so it can move back (expect different SPI device numbering
+> and GPIO pinouts; see "Porting to another SBC"). Note DietPi/Armbian do
+> **not** support the A733 — use the official Orange Pi images.
 
 ## Parts list
 
@@ -230,16 +243,55 @@ and the default paths assume a root install at `/root/RadioWall/linux` — adjus
 | Visualizer flat / `ffmpeg not installed; decoder disabled` | no ffmpeg | `apt install ffmpeg`, then restart the service |
 | Screen upside down | depends how the panel sits | set `RADIOWALL_FLIP=1` (in `/etc/radiowall.env`) |
 
+## Orange Pi Zero 3W (A733) setup — working 2026-07-12
+
+Board profiles live in `radiowall/hw/board.py` — auto-detected from
+`/proc/device-tree/model` ("Raspberry Pi …" → `pi`; "sun60iw2" → `opizero3w`),
+override with `RADIOWALL_BOARD=pi|opizero3w`. On non-Pi boards GPIO goes
+through `radiowall/hw/gpio_compat.py`, an RPi.GPIO-compatible facade over
+libgpiod v2 (pip `gpiod`), so the encoder and luma both work unchanged.
+
+**The 40-pin header matches the Pi layout** for everything we use — SPI at
+physical 19/23/24, UART at 8/10, I2C at 3/5 — so the ST7789 HAT and the
+encoder plug in at the same physical positions. Only the numbers behind
+them differ (see the table in `radiowall/hw/board.py`).
+
+Setup on the official Orange Pi **Ubuntu Jammy server** image (Python 3.10,
+kernel 6.6.x-sun60iw2 — DietPi/Armbian do NOT support the A733):
+
+```bash
+# 1. switch the Chinese default mirrors to ports.ubuntu.com (see git log)
+# 2. enable SPI3 (→ /dev/spidev3.0/.1 after reboot):
+echo 'overlays=spi3-cs0-cs1-spidev' | sudo tee -a /boot/orangepiEnv.txt && sudo reboot
+# 3. deps + venv:
+sudo apt install -y gcc python3-dev python3-venv gpiod python3-libgpiod \
+    libjpeg-dev zlib1g-dev libfreetype6-dev
+python3 -m venv .venv && .venv/bin/pip install -e ".[pi]"
+# 4. run (spidev + gpiochip are root-only on this image):
+sudo .venv/bin/python -m radiowall
+```
+
+Gotchas collected the hard way:
+- `/proc/device-tree/model` is just `sun60iw2` — no board name; detection
+  keys off that SoC string.
+- The vendor image's `orangepi` user needs a password for sudo; drop a
+  NOPASSWD file in `/etc/sudoers.d/` for unattended deploys (dev only).
+- I2C1 sits on physical pins 38/40 — the same pins the encoder uses. Don't
+  enable the `i2c1` overlay while an encoder is wired there.
+- **SSD1322 module (TZT 3.12" Ver 2.1, 16-pin)**: ships in parallel-bus
+  mode! 4-wire SPI needs the solder jumpers set to **R5 + R8 populated,
+  R6 + R7 empty** (BS1=0, BS0=0 — table on the silkscreen; ours shipped
+  R6+R8 = dead panel, moved R6→R5 with a solder bridge, 2026-07-12).
+  Wiring (module pin → OPi physical): 1 GND→20, 2 VCC→17 (3.3V!),
+  4 D0/CLK→23, 5 D1/DIN→19, 14 D/C#→22, 15 RES#→15, 16 CS#→24.
+  Unused bus pins (6–13) floating — works on our unit; ground them if a
+  future unit misbehaves.
+
 ## Porting to another SBC
 
 **Raspberry Pi family (4, 5, Zero 2 W)**: identical steps. Pi 5 is dramatically faster; Zero 2 W's 512 MB RAM will struggle even with swap — lean harder on apt, avoid pip from source.
 
-**Orange Pi / Rock / other non-Broadcom SBCs**: DietPi supports them and the pip steps are unchanged, but:
-- **GPIO pinouts differ** — the Pi TFT HAT won't plug in as-is; you'd hand-wire SPI + buttons
-- SPI device may appear as `/dev/spidev1.0` instead of `/dev/spidev0.0` — our factory needs a parameter
-- Kernel header packages are named differently
-
-The Python code is portable; hardware config (SPI bus/device, GPIO pins for buttons/backlight) needs a config-file or env-var knob.
+**Other non-Broadcom SBCs (Rock, etc.)**: add a `BoardProfile` in `radiowall/hw/board.py` (SPI port/device + GPIO line offsets for DC/backlight/encoder, chip path) — the gpiod shim handles the rest. Check the 40-pin layout before assuming the HAT plugs in.
 
 ## Layout
 

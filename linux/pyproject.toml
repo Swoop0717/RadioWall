@@ -2,7 +2,7 @@
 name = "radiowall"
 version = "0.1.0"
 description = "RadioWall — interactive world map radio, Linux SBC port"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "luma.oled>=3.14",
     "luma.lcd>=2.11",
@@ -17,6 +17,7 @@ dependencies = [
 pi = [
     "evdev>=1.7",
     "gpiod>=2.1",
+    "spidev>=3.6",
 ]
 dev = [
     "pytest>=8.0",

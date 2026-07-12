@@ -30,9 +30,9 @@ DEFAULT_EMULATOR_SCALE = 4
 _ST7789_1P14_X_OFFSET = 40
 _ST7789_1P14_Y_OFFSET = 53
 
-# Pinout on these boards: DC=GPIO25, backlight=GPIO22, RST not wired.
-_ST7789_DC_PIN = 25
-_ST7789_BL_PIN = 22
+# Pinout (physical header positions, identical on Pi + Orange Pi):
+# DC=pin 22, backlight=pin 15, RST not wired. The per-board GPIO
+# numbers + SPI bus + GPIO library live in radiowall.hw.board.
 
 
 def _pick_driver() -> str:
@@ -85,6 +85,17 @@ def _make_st7789():
     from luma.core.interface.serial import spi
     from luma.lcd.device import st7789
 
+    from radiowall.hw.board import get_gpio, get_profile
+
+    profile = get_profile()
+    # On the Pi, gpio=None lets luma pick its RPi.GPIO default (proven
+    # setup, unchanged). Elsewhere, inject the gpiod-backed shim.
+    gpio = None if profile.gpio_chip is None else get_gpio()
+    if profile.gpio_chip is not None and gpio is None:
+        raise RuntimeError(
+            f"board {profile.name}: gpiod backend unavailable — "
+            "pip install gpiod>=2.1 and check /dev/gpiochip* permissions")
+
     # luma.lcd's st7789 writes pixels at controller-memory (0,0) with
     # no offset logic — correct for 240x240 and 240x320 panels, wrong
     # for 240x135 sub-panels. Subclass and shift the CASET/RASET
@@ -110,13 +121,15 @@ def _make_st7789():
              "flipped 180°" if flip else "normal", rotate)
 
     return st7789_135(
-        spi(port=0, device=0, gpio_DC=_ST7789_DC_PIN, gpio_RST=None,
-            bus_speed_hz=40_000_000),
+        spi(port=profile.spi_port, device=profile.spi_device,
+            gpio_DC=profile.dc_pin, gpio_RST=None,
+            bus_speed_hz=40_000_000, gpio=gpio),
         width=240,
         height=135,
         rotate=rotate,
-        gpio_LIGHT=_ST7789_BL_PIN,
+        gpio_LIGHT=profile.backlight_pin,
         active_low=False,
+        gpio=gpio,
     )
 
 
@@ -124,4 +137,11 @@ def _make_ssd1322():
     from luma.core.interface.serial import spi
     from luma.oled.device import ssd1322
 
-    return ssd1322(spi(port=0, device=0), width=256, height=64)
+    from radiowall.hw.board import get_gpio, get_profile
+
+    profile = get_profile()
+    gpio = None if profile.gpio_chip is None else get_gpio()
+    return ssd1322(
+        spi(port=profile.spi_port, device=profile.spi_device,
+            gpio_DC=profile.dc_pin, gpio_RST=profile.rst_pin, gpio=gpio),
+        width=256, height=64)
