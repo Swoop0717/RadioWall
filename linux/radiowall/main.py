@@ -20,6 +20,7 @@ from radiowall.audio import decoder, proxy
 from radiowall.audio.hub import StreamHub
 from radiowall.display import fonts, visualizer
 from radiowall.display.factory import make_device
+from radiowall.input.encoder import RotaryEncoder
 from radiowall.logging_setup import setup as setup_logging
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ def main() -> int:
     fs = fonts.fonts_for(device.height)
 
     buttons = _Buttons()
+    encoder = RotaryEncoder()
     hub = _start_audio_pipeline()
     mode = 0
 
@@ -137,12 +139,17 @@ def main() -> int:
         fps_n = 0
         while True:
             a_event, b_event = buttons.poll()
+            delta, presses = encoder.poll()
             if a_event:
                 mode = (mode + 1) % len(MODES)
                 log.info("button A: mode -> %d (%s)", mode, MODES[mode].__name__)
-            if b_event:
+            if delta:
+                mode = (mode + delta) % len(MODES)
+                log.info("encoder: mode -> %d (%s)", mode, MODES[mode].__name__)
+            if b_event or presses:
                 mode = 0
-                log.info("button B: reset to mockup")
+                log.info("%s: reset to mockup",
+                         "button B" if b_event else "encoder press")
             MODES[mode](device, frame, fs)
             frame += 1
             fps_n += 1
@@ -156,6 +163,7 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        encoder.stop()
         decoder.stop()
         proxy.stop()
         if hub is not None:
