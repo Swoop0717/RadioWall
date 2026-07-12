@@ -35,7 +35,7 @@ The project has two tracks:
 - **P1**: LILYGO T-Display-S3-Long, built-in AMOLED + touch. Fully working standalone.
 - **P2**: ESP32-S3 + 55" IR touch frame via USB Host. Working, logs over WiFi UDP.
 
-**[linux/](linux/)** *(in progress)* — Port to a Linux SBC (Orange Pi Zero 3). Why: room for nicer UI, easier iteration in Python, no LittleFS/PSRAM constraints, and the IR frame already shows up as a standard HID device over USB.
+**[linux/](linux/)** *(active)* — Python port on an **Orange Pi Zero 3W (Allwinner A733)**. All final hardware is validated together (2026-07-12): SSD1322 256×64 OLED, EC11/KY-040 rotary encoder, and the 55" IR frame as a plain USB HID device — no USB-host gymnastics. UI mockup + audio visualizers running; the radio logic (Radio.garden/LinkPlay/places lookup) is the remaining port. Why Linux: nicer UI, faster Python iteration, no LittleFS/PSRAM constraints.
 
 Both tracks talk to the same Radio.garden API and the same WiiM speaker over LinkPlay HTTPS.
 
@@ -57,7 +57,9 @@ No server. No audio processing on the device. The compute board just coordinates
 | Touch | 55" IR touch frame (USB HID, VID 1FF7) |
 | Map | Equirectangular print behind glass (110 × 62 cm touch area) |
 | Compute (P1/P2) | LILYGO T-Display-S3-Long (ESP32-S3) |
-| Compute (Linux track) | Orange Pi Zero 3 (Allwinner H618) |
+| Compute (Linux track) | Orange Pi Zero 3W (Allwinner A733, 4 GB) |
+| Display (Linux track) | TZT 3.12" 256×64 SSD1322 SPI OLED |
+| Dial (Linux track) | EC11 / KY-040 rotary encoder |
 
 ## ESP32 Firmware
 
@@ -76,7 +78,10 @@ Environments:
 
 ## Linux Port
 
-See [linux/](linux/) (scaffolding in progress).
+See [linux/README.md](linux/README.md) — includes the full parts list, the
+Orange Pi pin-allocation table, board setup, and the collected hardware
+gotchas (OLED bus-mode solder jumpers, KY-040 pull-up rail, serial console
+recovery pins).
 
 ## Tools
 

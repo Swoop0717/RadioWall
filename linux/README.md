@@ -32,21 +32,57 @@ state machine). The screen content is still a hardcoded mockup. See PLAN.md.
 > 115200 8N1, 3.3 V. Cross-connect TX↔RX; if silent, swap the two data wires
 > (adapter silkscreens lie). Power: the PWRIN Type-C does **no PD negotiation**
 > — use a plain 5 V/3 A supply via USB-A→C cable, not a PD charger with C-to-C.
-> Development continues on the Raspberry Pi 3 B+ for now; the Python code is
-> board-agnostic, so it can move back (expect different SPI device numbering
-> and GPIO pinouts; see "Porting to another SBC"). Note DietPi/Armbian do
-> **not** support the A733 — use the official Orange Pi images.
+> Development now happens on the Orange Pi; the Pi 3 B+ rig remains a working
+> fallback (the code is board-agnostic, profiles auto-detect). Note
+> DietPi/Armbian do **not** support the A733 — use the official Orange Pi
+> images.
 
 ## Parts list
 
-| Role | Part |
+### Final build (all validated together 2026-07-12)
+
+| Role | Part | Notes |
+|---|---|---|
+| Compute | **Orange Pi Zero 3W** (Allwinner A733, 4 GB) + microSD | at `192.168.0.5`; official Ubuntu Jammy image only |
+| PSU | plain **5 V / ≥3 A** USB-A brick + **USB-A→USB-C** cable | PWRIN port; **no PD** — C-to-C from a PD charger may deliver nothing |
+| Display | TZT 3.12" 256×64 **SSD1322** SPI OLED (16-pin, Ver 2.1) | solder jumpers must be in **4SPI** position (R5+R8); ships in parallel mode |
+| Rotation/press input | **KY-040** encoder module (dev) / bare **EC11** (final panel) | KY-040's `+` **must** go to 3.3 V; bare EC11 needs no supply |
+| Touch input | 55" **IR touch frame**, USB (CVTouch, VID 1FF7 PID 0013) | plain HID; needs **USB-C OTG adapter** into the middle Type-C (DP) port |
+| Speaker | WiiM Amp Pro (`192.168.0.33`) | streams audio itself; the board only coordinates |
+| Enclosure | Car-radio shell (planned) | |
+
+### Dev / support gear
+
+| Item | Why it earned its place |
 |---|---|
-| Compute | Raspberry Pi 3 B+ (1 GB) + microSD + **5.1 V / 2.5 A** PSU |
-| Dev display | 1.14" 240×135 ST7789 "Pi TFT" (Adafruit Mini PiTFT or clone, 2 buttons) |
-| Target display | TZT 3.12" 256×64 **SSD1322** SPI OLED |
-| Inputs | EC11 rotary encoders · momentary buttons · 55" IR touch frame (USB) |
-| Speaker | WiiM Amp Pro (`192.168.0.33`) — streams audio; the Pi only coordinates |
-| Enclosure | Car-radio shell (planned) |
+| **CP2102 USB-UART adapter** + 3 DuPont wires | serial console = the only way into a headless board that won't network; solved the "dead" Orange Pi in one session |
+| Raspberry Pi 3 B+ (1 GB) + 5.1 V/2.5 A PSU | fallback dev rig, still runs the same code (profile auto-detects) |
+| 1.14" 240×135 ST7789 "Pi TFT" HAT (2 buttons) | dev display; proved the OPi SPI/GPIO stack before the OLED went on |
+| Pinecil + flux + solder | SMD jumper surgery on the OLED (R6→R5); will solder leads onto bare EC11s |
+| Female-female DuPont wires, assorted | everything above; keep spares — crimps fail invisibly |
+
+## Orange Pi Zero 3W pin allocation
+
+Every wire on the 40-pin header in one place. "Free" pins are unlisted.
+
+| Physical pin | Signal | Goes to |
+|---|---|---|
+| 1 | 3.3 V | KY-040 **+** (pull-up rail — not optional) |
+| 6 / 8 / 10 | GND / board TX / board RX | *recovery serial console* (115200 8N1, 3.3 V) — keep free |
+| 15 | PE9 | OLED **RES#** (pin 15) · [ST7789 HAT backlight when that display is used] |
+| 17 | 3.3 V | OLED **VCC** (pin 2) — **never 5 V** |
+| 19 | SPI3 MOSI | OLED **D1/DIN** (pin 5) |
+| 20 | GND | OLED **GND** (pin 1) |
+| 22 | PD0 | OLED **D/C#** (pin 14) |
+| 23 | SPI3 SCLK | OLED **D0/CLK** (pin 4) |
+| 24 | SPI3 CS0 | OLED **CS#** (pin 16) |
+| 36 | PD2 | encoder **SW** |
+| 38 | PB8 | encoder **DT** — ⚠ same pin as I2C1 SDA; don't enable the `i2c1` overlay |
+| 39 | GND | encoder **GND** |
+| 40 | PB7 | encoder **CLK** — ⚠ same pin as I2C1 SCL |
+
+USB: IR touch frame → **middle Type-C** (the DP/data port) via OTG adapter.
+OLED pins 3 and 6–13 (NC + parallel bus) stay unconnected — fine on our unit.
 
 ## Inputs (GPIO wiring)
 
