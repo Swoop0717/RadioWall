@@ -51,16 +51,24 @@ state machine). The screen content is still a hardcoded mockup. See PLAN.md.
 ## Inputs (GPIO wiring)
 
 **Rotary encoder (EC11 / KY-040)** — driver in `radiowall/input/encoder.py`.
-Tested wiring on the Pi 3 B+ with the ST7789 HAT still attached (uses the spare
-pins poking out past the HAT; `+` left unwired, internal pull-ups do the job):
+Same physical pins on the Pi 3 B+ and the Orange Pi Zero 3W (per-board GPIO
+numbers resolved by `radiowall/hw/board.py`):
 
-| KY-040 | → Pi **physical pin** | BCM |
-|---|---|---|
-| CLK | 40 | GPIO21 |
-| DT | 38 | GPIO20 |
-| SW | 36 | GPIO16 |
-| GND | 39 | — |
-| + | *unwired* | — |
+| KY-040 | → **physical pin** | Pi BCM | OPi line |
+|---|---|---|---|
+| CLK | 40 | GPIO21 | 39 (PB7) |
+| DT | 38 | GPIO20 | 40 (PB8) |
+| SW | 36 | GPIO16 | 98 (PD2) |
+| GND | 39 | — | — |
+| + | **3.3 V (pin 1 or 17)** | — | — |
+
+> **`+` is NOT optional on a KY-040** (learned the hard way, 2026-07-12): the
+> module has 10 k pull-ups (R1–R3) from CLK/DT/SW to the `+` rail. Left
+> floating, any line pulled low drags the rail — and with it the *other two
+> lines* — through the resistor network, overpowering the SoC's weak internal
+> pull-ups. Symptom: all three inputs toggle in perfect lockstep. A **bare
+> EC11** has no such network and genuinely needs no supply: 3-leg side
+> A→CLK / middle→GND / B→DT, 2-leg side one→SW other→GND.
 
 Smoke-test a (replacement) encoder without touching the display:
 
