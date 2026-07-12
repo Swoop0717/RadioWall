@@ -1,10 +1,15 @@
-"""Entry point — VFD-style mockup + visualizer, button-togglable.
+"""Entry point — RadioWall: touch the map, hear that city's radio.
 
-On startup, if RADIOWALL_STREAM_URL is set, the Pi fetches that
-stream once and:
-  - serves it at http://<pi>:8000/stream.mp3 (for the WiiM to play)
-  - decodes + FFTs a copy for the reactive visualizer
-See radiowall.audio for the stream hub/decoder/proxy.
+Inputs: IR touch frame (tap → play nearest city), one rotary encoder
+(rotate = volume; short press = next station; long press = stop;
+double press = cycle now-playing ↔ visualizer screens), plus the dev
+HAT's two buttons (A = cycle screens, B = home) where present.
+
+All network I/O runs on the RadioWorker thread; this loop only polls
+inputs at ~50 Hz and renders from a state snapshot.
+
+Legacy demo mode: RADIOWALL_AUDIO_PROXY=1 restores the old fixed-stream
+proxy pipeline (RADIOWALL_STREAM_URL re-served at :8000/stream.mp3).
 """
 
 from __future__ import annotations
@@ -14,62 +19,35 @@ import logging
 import os
 import time
 
-from luma.core.render import canvas
-
+from radiowall import geo, places_db
 from radiowall.audio import decoder, proxy
 from radiowall.audio.hub import StreamHub
-from radiowall.display import fonts, visualizer
+from radiowall.display import fonts, screens, visualizer
 from radiowall.display.factory import make_device
 from radiowall.input.encoder import RotaryEncoder
+from radiowall.input.gestures import Gesture, GestureDetector
+from radiowall.input.touch import TouchInput
 from radiowall.logging_setup import setup as setup_logging
+from radiowall.places_db import PlacesDB
+from radiowall.radio import Next, PlayAt, RadioWorker, SetVolume, Stop
+from radiowall.state import AppState
 
 log = logging.getLogger(__name__)
 
-AMBER = (255, 176, 0)
-AMBER_DIM = (110, 75, 0)
-
-SCROLL_PX_PER_FRAME = 2
 BUTTON_A_PIN = 23
 BUTTON_B_PIN = 24
 
 DEFAULT_STREAM_URL = "http://ice1.somafm.com/groovesalad-128-mp3"
 PROXY_PORT = 8000
 
-
-def draw_mockup(device, frame: int, fs: fonts.FontSet) -> None:
-    W, H = device.width, device.height
-    pad = max(2, W // 64)
-
-    top_line = "Vienna  AT  ·  #3 of 12"
-    bottom_line = "vol 45  ·  94.0  ·  WiiM"
-    scroll = "Radio Wien  ·  Blue in Green  ·  Miles Davis  ·  "
-
-    with canvas(device) as draw:
-        draw.text((pad, pad), top_line, font=fs.small, fill=AMBER)
-
-        top_sep_y = int(H * 0.26)
-        bot_sep_y = int(H * 0.74)
-        draw.line((0, top_sep_y, W, top_sep_y), fill=AMBER_DIM)
-        draw.line((0, bot_sep_y, W, bot_sep_y), fill=AMBER_DIM)
-
-        band_top = top_sep_y + 2
-        band_h = bot_sep_y - top_sep_y
-        y_text = band_top + max(0, (band_h - fs.big.size) // 2)
-        text_w = max(1, int(draw.textlength(scroll, font=fs.big)))
-        offset_px = (frame * SCROLL_PX_PER_FRAME) % text_w
-        draw.text((-offset_px, y_text), scroll, font=fs.big, fill=AMBER)
-        draw.text((-offset_px + text_w, y_text), scroll, font=fs.big, fill=AMBER)
-
-        draw.text((pad, bot_sep_y + pad), bottom_line, font=fs.small, fill=AMBER)
-
-
-MODES = [
-    draw_mockup,
+# Screen 0 is the state-driven status screen; the rest are visualizers.
+VISUALIZERS = [
     visualizer.draw_bars,
     visualizer.draw_mirror,
     visualizer.draw_radial,
     visualizer.draw_wave,
 ]
+NUM_SCREENS = 1 + len(VISUALIZERS)
 
 
 class _Buttons:
@@ -101,6 +79,7 @@ class _Buttons:
 
 
 def _start_audio_pipeline() -> StreamHub | None:
+    """Legacy fixed-stream demo mode (RADIOWALL_AUDIO_PROXY=1 only)."""
     url = os.getenv("RADIOWALL_STREAM_URL", DEFAULT_STREAM_URL).strip()
     if not url or url.lower() == "off":
         log.info("audio pipeline disabled (RADIOWALL_STREAM_URL=off)")
@@ -128,41 +107,74 @@ def main() -> int:
     log.info("display ready: %dx%d", device.width, device.height)
     fs = fonts.fonts_for(device.height)
 
+    state = AppState()
+    places = PlacesDB.load(places_db.default_path())
+    log.info("places db: %d cities", len(places))
+    calib = geo.load_calibration()
+
+    legacy_proxy = os.getenv("RADIOWALL_AUDIO_PROXY", "").strip() == "1"
+    hub = _start_audio_pipeline() if legacy_proxy else None
+    worker = RadioWorker(state, places, use_decoder=not legacy_proxy)
+    worker.start()
+
     buttons = _Buttons()
     encoder = RotaryEncoder()
-    hub = _start_audio_pipeline()
-    mode = 0
+    gestures = GestureDetector()
+    touch = TouchInput()
+    vol_step = int(os.getenv("RADIOWALL_VOL_STEP", "2"))
+    screen = 0
 
     try:
         frame = 0
         fps_t = time.monotonic()
         fps_n = 0
         while True:
-            a_event, b_event = buttons.poll()
-            delta, presses = encoder.poll()
-            if a_event:
-                mode = (mode + 1) % len(MODES)
-                log.info("button A: mode -> %d (%s)", mode, MODES[mode].__name__)
+            now = time.monotonic()
+
+            taps = touch.poll()
+            if taps:                       # newest tap wins within a frame
+                lat, lon = geo.tap_to_latlon(taps[-1].x, taps[-1].y, calib)
+                log.info("tap (%.3f, %.3f) -> (%.2f, %.2f)",
+                         taps[-1].x, taps[-1].y, lat, lon)
+                worker.submit(PlayAt(lat, lon))
+
+            delta, _presses = encoder.poll()
             if delta:
-                mode = (mode + delta) % len(MODES)
-                log.info("encoder: mode -> %d (%s)", mode, MODES[mode].__name__)
-            if b_event or presses:
-                mode = 0
-                log.info("%s: reset to mockup",
-                         "button B" if b_event else "encoder press")
-            MODES[mode](device, frame, fs)
+                worker.submit(SetVolume(state.bump_volume(delta * vol_step)))
+
+            for g in gestures.update(encoder.poll_events(), now):
+                log.info("gesture: %s", g.name)
+                if g is Gesture.SHORT:
+                    worker.submit(Next())
+                elif g is Gesture.LONG:
+                    worker.submit(Stop())
+                elif g is Gesture.DOUBLE:
+                    screen = (screen + 1) % NUM_SCREENS
+
+            a_event, b_event = buttons.poll()
+            if a_event:
+                screen = (screen + 1) % NUM_SCREENS
+            if b_event:
+                screen = 0
+
+            if screen == 0:
+                screens.draw_status_screen(device, frame, fs, state.snapshot())
+            else:
+                VISUALIZERS[screen - 1](device, frame, fs)
+
             frame += 1
             fps_n += 1
-            now = time.monotonic()
-            if now - fps_t >= 2.0:
-                log.info("render: %.1f fps (mode=%s)",
-                         fps_n / (now - fps_t), MODES[mode].__name__)
+            if now - fps_t >= 5.0:
+                log.info("render: %.1f fps (screen=%d)",
+                         fps_n / (now - fps_t), screen)
                 fps_t = now
                 fps_n = 0
             time.sleep(0.02)
     except KeyboardInterrupt:
         pass
     finally:
+        worker.stop()
+        touch.stop()
         encoder.stop()
         decoder.stop()
         proxy.stop()

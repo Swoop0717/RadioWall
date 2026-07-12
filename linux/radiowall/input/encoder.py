@@ -77,6 +77,7 @@ class RotaryEncoder:
         self._lock = threading.Lock()
         self._delta = 0
         self._presses = 0
+        self._events: list[tuple[float, bool]] = []   # (ts, is_down) edges
         self._gpio = None
         self._running = False
 
@@ -125,8 +126,9 @@ class RotaryEncoder:
                 sw_cand_t = now
             elif now - sw_cand_t >= self.debounce_s and sw_cand != sw_state:
                 sw_state = sw_cand
-                if sw_state == 0:                      # active-low: pressed
-                    with self._lock:
+                with self._lock:
+                    self._events.append((now, sw_state == 0))
+                    if sw_state == 0:                  # active-low: pressed
                         self._presses += 1
             time.sleep(self.poll_interval_s)
 
@@ -137,6 +139,17 @@ class RotaryEncoder:
             self._delta = 0
             self._presses = 0
         return d, p
+
+    def poll_events(self) -> list[tuple[float, bool]]:
+        """Drain raw debounced switch edges as `(monotonic_ts, is_down)`.
+
+        For gesture detection (see `radiowall.input.gestures`); the
+        simple `poll()` press counter above stays untouched. Don't use
+        both for the same purpose — each press appears in both.
+        """
+        with self._lock:
+            events, self._events = self._events, []
+        return events
 
     def stop(self) -> None:
         self._running = False
@@ -158,16 +171,19 @@ def _smoketest() -> None:
     if enc._gpio is None:
         print("No GPIO here — run this on the Pi.")
         return
-    print("Turn the knob / press it. Ctrl+C to stop.")
+    from radiowall.input.gestures import GestureDetector
+
+    print("Turn the knob / press it (short, long, double). Ctrl+C to stop.")
     pos = 0
+    gestures = GestureDetector()
     try:
         while True:
-            delta, presses = enc.poll()
+            delta, _presses = enc.poll()
             if delta:
                 pos += delta
                 print(f"{'CW' if delta > 0 else 'CCW'}  pos={pos}")
-            for _ in range(presses):
-                print("PRESS")
+            for g in gestures.update(enc.poll_events(), time.monotonic()):
+                print(g.name)
             time.sleep(0.05)
     except KeyboardInterrupt:
         pass
