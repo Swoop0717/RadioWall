@@ -232,6 +232,26 @@ def test_volume_debounced_to_last_value():
         w.stop()
 
 
+def test_hop_into_empty_city_keeps_playing_display():
+    # p1 has one station; p2 (nearer) is empty; p3 has stations.
+    rg = FakeRG({"p1": _stations(1, "a"), "p3": _stations(1, "c")})
+    state, w = _worker(rg)
+    try:
+        w.submit(PlayAt(0.0, 0.0))     # plays a0 in Alpha
+        _drain(w)
+        w.submit(Next())               # hop to Beta: empty -> status, but
+        _drain(w)                      # display must show a0 still playing
+        snap = state.snapshot()
+        assert snap.phase == Phase.PLAYING      # NOT stuck in LOADING
+        assert snap.station_title == "a 0"
+        assert snap.status_text == "No stations found"
+        w.submit(Next())               # Beta now excluded -> Gamma plays
+        _drain(w)
+        assert state.snapshot().station_title == "c 0"
+    finally:
+        w.stop()
+
+
 def test_no_stations_in_city_sets_status():
     rg = FakeRG({})                    # every city has zero stations
     state, w = _worker(rg)

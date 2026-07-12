@@ -35,13 +35,22 @@ def _sine_levels(frame: int) -> list[float]:
     ]
 
 
+# FFT bands update at ~43 Hz while the panel renders at 30-45 fps; drawing
+# the raw values makes bars jump in visible steps. Glide the *displayed*
+# level toward the target each render frame instead.
+_shown = [0.0] * NUM_BARS
+_LERP = 0.45
+
+
 def _levels(frame: int) -> list[float]:
     bands = decoder.get_bands()
     if bands is None:
         return _sine_levels(frame)
-    if len(bands) >= NUM_BARS:
-        return bands[:NUM_BARS]
-    return bands + [0.0] * (NUM_BARS - len(bands))
+    if len(bands) < NUM_BARS:
+        bands = bands + [0.0] * (NUM_BARS - len(bands))
+    for i in range(NUM_BARS):
+        _shown[i] += (bands[i] - _shown[i]) * _LERP
+    return list(_shown)
 
 
 # ---------- 1. Symmetric vertical bars --------------------------------

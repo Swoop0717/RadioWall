@@ -212,10 +212,12 @@ class RadioWorker:
         self._state.set_loading(place.name, place.country)
         stations = self._rg.get_stations(place.id)
         if not stations:
-            # City with no stations still counts as visited; try further
-            # on the next NEXT rather than looping here.
-            s.enter_city(place, [])
-            self._state.set_status("No stations found")
+            # Mark visited WITHOUT entering: the previous station is still
+            # audibly playing and its info must survive on screen. The next
+            # NEXT skips this city via the visited set.
+            s.visited.add(place.id)
+            self._to_idle_or_playing()      # un-stick the "Tuning..." phase
+            self._state.set_status("No stations found")   # after: set_playing clears status
             return False
         s.enter_city(place, stations)
         return True
