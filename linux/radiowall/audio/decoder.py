@@ -41,11 +41,18 @@ NORMALIZE_GAIN = 1.6
 
 # The WiiM buffers seconds of stream before you HEAR it, while our own
 # ffmpeg tap reacts almost live — so the raw visualizer dances ahead of
-# the music. Band frames are kept in a timestamped ring; get_bands()
-# returns the frame from RADIOWALL_VIS_DELAY seconds ago. Tune by ear.
+# the music. Fix: a consumption clock. Radio servers burst many seconds
+# of backlog on connect (SHOUTcast: 10-30 s) and ffmpeg decodes it all
+# instantly, so band frames are REPLAYED at real-time pace from the
+# moment data first flowed, shifted by RADIOWALL_VIS_DELAY — mirroring
+# how the speaker itself consumes the very same burst. (A first attempt
+# stamped frames with a synthetic stream clock anchored at connect; the
+# burst pushed the whole timeline into the future and the delayed lookup
+# never found a frame — visualizer permanently dark on bursty stations.)
 VIS_DELAY_S = float(os.getenv("RADIOWALL_VIS_DELAY", "0") or 0)
-_HISTORY_S = max(12.0, VIS_DELAY_S + 2.0)
-_HISTORY_LEN = int(_HISTORY_S * SAMPLE_RATE / CHUNK_SAMPLES)
+_CHUNK_S = CHUNK_SAMPLES / SAMPLE_RATE
+_HISTORY_S = max(30.0, VIS_DELAY_S + 5.0)      # must exceed burst + delay
+_HISTORY_LEN = int(_HISTORY_S / _CHUNK_S)
 
 
 class _Decoder:
@@ -54,8 +61,10 @@ class _Decoder:
         self._proc: Optional[subprocess.Popen] = None
         self._stop = threading.Event()
         self._smooth = [0.0] * NUM_BANDS
-        self._history: collections.deque[tuple[float, list[float]]] = \
+        self._history: collections.deque[list[float]] = \
             collections.deque(maxlen=_HISTORY_LEN)
+        self._t0: Optional[float] = None      # wall time of first band frame
+        self._frames_total = 0                # appended ever (incl. evicted)
         self._lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
@@ -137,14 +146,20 @@ class _Decoder:
         with self._lock:
             if VIS_DELAY_S <= 0:
                 return list(self._smooth)
-            cutoff = time.monotonic() - VIS_DELAY_S
-            # newest frame that is at least VIS_DELAY_S old
-            for ts, bands in reversed(self._history):
-                if ts <= cutoff:
-                    return list(bands)
-            # not enough history yet (just tuned in): stay quiet until the
-            # delayed timeline catches up — matches what you're hearing
-            return [0.0] * NUM_BANDS
+            if self._t0 is None:
+                return [0.0] * NUM_BANDS      # no data yet
+            # Consumption clock: frame index that should be "audible" now,
+            # counting in stream time from the first decoded frame.
+            idx = int((time.monotonic() - self._t0 - VIS_DELAY_S) / _CHUNK_S)
+            if idx < 0:
+                return [0.0] * NUM_BANDS      # still inside the delay warm-up
+            evicted = self._frames_total - len(self._history)
+            i = idx - evicted
+            if i < 0:
+                i = 0                          # fell behind eviction → oldest
+            elif i >= len(self._history):
+                i = len(self._history) - 1     # producer stalled → freeze
+            return list(self._history[i])
 
     def _drain_stderr(self) -> None:
         """Read stderr line-by-line and log it; prevents the 64 KB
@@ -160,14 +175,6 @@ class _Decoder:
         (used by the supervisor to pick the retry backoff)."""
         assert self._proc is not None and self._proc.stdout is not None
         decoded_any = False
-        # Stream-time pacing: HTTP radio arrives in ~1 s bursts, so chunk
-        # ARRIVAL times cluster and the delayed visualizer would replay
-        # those clusters ("updates once a second"). Each chunk is exactly
-        # CHUNK_SAMPLES/rate seconds of audio — timestamp it on that grid,
-        # anchored to the wall clock, re-anchoring only on a real stall.
-        chunk_s = CHUNK_SAMPLES / SAMPLE_RATE
-        anchor: float | None = None
-        chunk_idx = 0
         window = np.hanning(CHUNK_SAMPLES).astype(np.float32)
         freqs = np.fft.rfftfreq(CHUNK_SAMPLES, 1.0 / SAMPLE_RATE)
         edges = np.logspace(
@@ -205,21 +212,15 @@ class _Decoder:
             ]
             peak = max(raw_levels) or 1.0
             norm = [min(1.0, v / peak * NORMALIZE_GAIN) for v in raw_levels]
-            now = time.monotonic()
-            if anchor is None:
-                anchor = now
-            ts = anchor + chunk_idx * chunk_s
-            if ts < now - 0.5:            # stream stalled → snap forward
-                anchor = now - chunk_idx * chunk_s
-                ts = now
-            chunk_idx += 1
-
             with self._lock:
+                if self._t0 is None:
+                    self._t0 = time.monotonic()
                 for i, v in enumerate(norm):
                     self._smooth[i] = (
                         (1 - SMOOTH_ALPHA) * self._smooth[i] + SMOOTH_ALPHA * v
                     )
-                self._history.append((ts, list(self._smooth)))
+                self._history.append(list(self._smooth))
+                self._frames_total += 1
 
 
 _singleton: Optional[_Decoder] = None
