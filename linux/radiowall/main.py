@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import time
 
 from radiowall import geo, places_db
@@ -103,6 +104,13 @@ def main() -> int:
     setup_logging()
     log.info("radiowall starting")
 
+    # systemd stops us with SIGTERM; turn it into a clean exit so the
+    # finally block below runs (and silences the WiiM on the way out).
+    def _sigterm(_signo, _frame):
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm)
+
     device = make_device(mock=args.emulate or None, scale=args.scale)
     log.info("display ready: %dx%d", device.width, device.height)
     fs = fonts.fonts_for(device.height)
@@ -173,7 +181,7 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        worker.stop()
+        worker.stop(stop_playback=True)
         touch.stop()
         encoder.stop()
         decoder.stop()

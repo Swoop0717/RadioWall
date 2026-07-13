@@ -87,13 +87,10 @@ def test_real_places_bin():
     if not path.exists():
         pytest.skip("real places.bin not present")
     db = PlacesDB.load(path)
-    assert len(db) == 12486
+    assert len(db) > 10_000            # exact count varies per regeneration
     vienna = db.find_nearest(48.21, 16.37)
     assert vienna.name == "Vienna"
-    # v1 data flaw: country is a 3-char truncated country NAME ("Aus"tria,
-    # "Uni"ted...), not an ISO code — regenerate places.bin to fix. The UI
-    # shows city only until then.
-    assert vienna.country == "Aus"
+    assert vienna.country == "AT"      # ISO alpha-2 since the 2026-07-13 regen
 
 
 # --- geo transform ---

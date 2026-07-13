@@ -68,15 +68,21 @@ def draw_status_screen(device, frame: int, fs: fonts.FontSet,
 
 
 def _header(draw, snap: Snapshot, fs, pad: int) -> None:
-    # v1 shows city only — places.bin's country field is a truncated
-    # name ("Uni", "Aus"), unfit for display until the DB is regenerated.
-    left = snap.place_name or ""
-    draw.text((pad, pad), left, font=fs.small, fill=AMBER)
+    W = draw.im.size[0]
+    right_w = 0
     if snap.station_total:
         right = f"{snap.station_index}/{snap.station_total}"
-        w = draw.textlength(right, font=fs.small)
-        draw.text((draw.im.size[0] - w - pad, pad), right,
-                  font=fs.small, fill=AMBER)
+        right_w = draw.textlength(right, font=fs.small)
+        draw.text((W - right_w - pad, pad), right, font=fs.small, fill=AMBER)
+
+    left = snap.place_name or ""
+    if snap.country:
+        left = f"{left} · {snap.country}"
+    font = fs.pick_small(left)
+    avail = W - right_w - 3 * pad
+    while left and draw.textlength(left, font=font) > avail:
+        left = left[:-2].rstrip() + "…"    # long country names must not
+    draw.text((pad, pad), left, font=font, fill=AMBER)   # hit the counter
 
 
 def _band(draw, snap: Snapshot, fs, band_y: int, W: int, frame: int) -> None:
@@ -86,16 +92,15 @@ def _band(draw, snap: Snapshot, fs, band_y: int, W: int, frame: int) -> None:
         dots = "." * (1 + (frame // 12) % 3)
         scroll_text(draw, f"Tuning{dots}", fs.big, band_y, W, frame=0)
     else:
-        scroll_text(draw, snap.station_title, fs.big, band_y, W, frame)
+        title = snap.station_title
+        scroll_text(draw, title, fs.pick_big(title), band_y, W, frame)
 
 
 def _footer(draw, snap: Snapshot, fs, pad: int, bot_sep: int, W: int) -> None:
+    # Just the volume — no state word. If music plays you hear it, if it's
+    # tuning the band says so, and idle has its own screen.
     y = bot_sep + 2   # tight: small font + descenders must fit in H-bot_sep
-    state = {Phase.PLAYING: "playing", Phase.LOADING: "tuning",
-             Phase.IDLE: "stopped"}[snap.phase]
     draw.text((pad, y), f"vol {snap.volume}", font=fs.small, fill=AMBER)
-    w = draw.textlength(state, font=fs.small)
-    draw.text((W - w - pad, y), state, font=fs.small, fill=AMBER)
 
 
 def _idle(draw, W: int, H: int, fs, frame: int) -> None:

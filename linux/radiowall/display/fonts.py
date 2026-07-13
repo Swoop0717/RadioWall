@@ -39,12 +39,51 @@ def load(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+# Wide-coverage fonts for scripts DejaVu lacks: Hangul, CJK, kana.
+# Noto Sans CJK ships in Debian/Ubuntu's fonts-noto-cjk package.
+_WIDE_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+]
+
+
+def load_wide(size: int) -> ImageFont.ImageFont | None:
+    """A Hangul/CJK-capable font, or None if none is installed."""
+    for path in _WIDE_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    return None
+
+
+def needs_wide(text: str) -> bool:
+    """True if `text` contains characters outside DejaVu's coverage —
+    Hangul Jamo/syllables, CJK ideographs, kana, fullwidth forms.
+    (Cyrillic and Greek are fine in DejaVu and stay on the default.)"""
+    return any(ord(ch) >= 0x1100 for ch in text)
+
+
 @dataclass(frozen=True)
 class FontSet:
     big: ImageFont.ImageFont
     med: ImageFont.ImageFont
     small: ImageFont.ImageFont
     tiny: ImageFont.ImageFont
+    # Wide-coverage variants (None when no CJK font is installed).
+    big_wide: ImageFont.ImageFont | None = None
+    small_wide: ImageFont.ImageFont | None = None
+
+    def pick_big(self, text: str) -> ImageFont.ImageFont:
+        if self.big_wide is not None and needs_wide(text):
+            return self.big_wide
+        return self.big
+
+    def pick_small(self, text: str) -> ImageFont.ImageFont:
+        if self.small_wide is not None and needs_wide(text):
+            return self.small_wide
+        return self.small
 
 
 def _env_float(name: str, default: float) -> float:
@@ -72,6 +111,8 @@ def fonts_for(height: int) -> FontSet:
         med=load(max(10, int(height * med))),
         small=load(max(8, int(height * small))),
         tiny=load(max(7, int(height * tiny))),
+        big_wide=load_wide(max(12, int(height * big))),
+        small_wide=load_wide(max(8, int(height * small))),
     )
 
 

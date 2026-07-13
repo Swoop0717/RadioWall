@@ -13,7 +13,7 @@
 // Database info
 #define PLACES_DB_MAGIC     "RGPL"
 #define PLACES_DB_VERSION   1
-#define PLACES_COUNT        12486
+#define PLACES_COUNT        12275
 #define PLACES_STRUCT_SIZE  52
 #define PLACES_HEADER_SIZE  16
 

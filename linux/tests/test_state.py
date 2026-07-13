@@ -219,6 +219,23 @@ def test_stop_goes_idle_and_stops_wiim():
         w.stop()
 
 
+def test_worker_exit_stops_playback_only_when_asked():
+    rg = FakeRG({"p1": _stations(1, "a")})
+    wiim = FakeWiim()
+    state, w = _worker(rg, wiim)
+    w.submit(PlayAt(0.0, 0.0))
+    _drain(w)
+    w.stop()                       # plain shutdown (e.g. worker restart)
+    assert wiim.stopped == 0       # music keeps playing
+
+    wiim2 = FakeWiim()
+    state2, w2 = _worker(rg, wiim2)
+    w2.submit(PlayAt(0.0, 0.0))
+    _drain(w2)
+    w2.stop(stop_playback=True)    # natural program exit
+    assert wiim2.stopped >= 1      # WiiM silenced
+
+
 def test_volume_debounced_to_last_value():
     rg = FakeRG({})
     wiim = FakeWiim()

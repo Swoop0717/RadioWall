@@ -115,6 +115,24 @@ def default_path() -> Path:
     return here.parents[2] / "esp32" / "data" / "places.bin"
 
 
+_countries: dict[str, str] | None = None
+
+
+def country_name(code: str) -> str:
+    """ISO alpha-2 → display name ("AT" → "Austria"); the code itself when
+    unknown. Names come from countries.json, generated next to places.bin
+    by tools/compile_places.py from radio.garden's own country naming."""
+    global _countries
+    if _countries is None:
+        import json
+        path = default_path().parent / "countries.json"
+        try:
+            _countries = json.loads(path.read_text())
+        except (OSError, ValueError):
+            _countries = {}
+    return _countries.get(code, code)
+
+
 def _main() -> int:
     import sys
 

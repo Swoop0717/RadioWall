@@ -67,7 +67,26 @@ OPI_ZERO3W = BoardProfile(
     gpio_chip="/dev/gpiochip0",
 )
 
-_PROFILES = {p.name: p for p in (PI, OPI_ZERO3W)}
+# Orange Pi Zero 2W (Allwinner H618) — prepared for the next prototype,
+# UNTESTED until a board arrives. Same physical header positions; pins per
+# the schematic pinout (munts.com OrangePiZero2WPinout.pdf, rev 2025-03):
+#   phys 22 = PI6 (dc), phys 15 = PI5 (backlight/rst),
+#   phys 40 = PI3 (clk), phys 38 = PI4 (dt), phys 36 = PC12 (sw)
+# sunxi line offsets: bank*32+n with A=0..I=8 → PI6=262, PI5=261,
+# PI3=259, PI4=260, PC12=76.
+# Bring-up checklist: Armbian/DietPi, enable SPI overlay (community images
+# expose /dev/spidev1.1 via the 'spidev1_1' overlay — if the panel stays
+# dark try spi_device=0), verify offsets with `gpioinfo`, verify the DT
+# model string below with `cat /proc/device-tree/model`.
+OPI_ZERO2W = BoardProfile(
+    name="opizero2w",
+    spi_port=1, spi_device=1,
+    dc_pin=262, backlight_pin=261, rst_pin=261,
+    encoder_clk=259, encoder_dt=260, encoder_sw=76,
+    gpio_chip="/dev/gpiochip0",
+)
+
+_PROFILES = {p.name: p for p in (PI, OPI_ZERO3W, OPI_ZERO2W)}
 
 
 def _read_dt_model() -> str:
@@ -97,6 +116,8 @@ def get_profile() -> BoardProfile:
         profile = PI
     elif model.startswith("sun60iw2"):
         profile = OPI_ZERO3W
+    elif "Zero2 W" in model or "Zero 2W" in model:   # Armbian H618 DT model
+        profile = OPI_ZERO2W
     else:
         profile = PI
     log.info("board profile (model=%r): %s", model, profile.name)

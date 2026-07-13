@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 from radiowall.audio import decoder
 from radiowall.linkplay import LinkPlay
-from radiowall.places_db import PlacesDB
+from radiowall.places_db import PlacesDB, country_name
 from radiowall.radio_garden import RadioGarden
 from radiowall.state import AppState, Session
 
@@ -94,10 +94,18 @@ class RadioWorker:
         self._running = True
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, stop_playback: bool = False) -> None:
+        """Shut the worker down. With stop_playback=True (natural program
+        exit) the WiiM is silenced too — a stopped RadioWall should not
+        leave the radio playing forever."""
         self._running = False
         self._queue.put(Stop())          # wake the loop
         self._thread.join(timeout=2)
+        if stop_playback and self._session is not None:
+            if self._use_decoder:
+                decoder.stop()
+            self._wiim.stop()
+            log.info("playback stopped on exit")
 
     def submit(self, cmd: Command) -> None:
         self._queue.put(cmd)
@@ -179,7 +187,7 @@ class RadioWorker:
             return
         log.info("touch (%.2f, %.2f) -> %s, %s", lat, lon,
                  place.name, place.country)
-        self._state.set_loading(place.name, place.country)
+        self._state.set_loading(place.name, country_name(place.country))
         stations = self._rg.get_stations(place.id)
         if not stations:
             self._state.set_status("No stations found")
@@ -209,7 +217,7 @@ class RadioWorker:
             return False
         log.info("city hop -> %s, %s (%d visited)",
                  place.name, place.country, len(s.visited))
-        self._state.set_loading(place.name, place.country)
+        self._state.set_loading(place.name, country_name(place.country))
         stations = self._rg.get_stations(place.id)
         if not stations:
             # Mark visited WITHOUT entering: the previous station is still
@@ -228,7 +236,7 @@ class RadioWorker:
             self._state.set_status("No more stations")
             return
         station = s.advance()
-        self._state.set_loading(s.place.name, s.place.country)
+        self._state.set_loading(s.place.name, country_name(s.place.country))
         stream_url = self._rg.resolve_stream_url(station.id)
         if not stream_url:
             self._state.set_status("Failed to play")
@@ -238,7 +246,8 @@ class RadioWorker:
             self._state.set_status("Failed to play")
             self._to_idle_or_playing()
             return
-        self._state.set_playing(s.place.name, s.place.country, station.title,
+        self._state.set_playing(s.place.name, country_name(s.place.country),
+                                station.title,
                                 s.playing_index + 1, len(s.stations))
         log.info("playing %d/%d: %s (%s)", s.playing_index + 1,
                  len(s.stations), station.title, s.place.name)
@@ -259,7 +268,7 @@ class RadioWorker:
         s = self._session
         station = s.current_station() if s else None
         if s and station:
-            self._state.set_playing(s.place.name, s.place.country,
+            self._state.set_playing(s.place.name, country_name(s.place.country),
                                     station.title, s.playing_index + 1,
                                     len(s.stations))
         else:
