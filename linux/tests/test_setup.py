@@ -155,8 +155,8 @@ def ui(cfg, monkeypatch):
             self.wiim_ips.append(ip)
 
     monkeypatch.setattr(su.discovery, "discover",
-                        lambda: [Speaker("Wiim Amp", "192.168.0.33"),
-                                 Speaker("Esszimmer", "192.168.0.63")])
+                        lambda **kw: [Speaker("Wiim Amp", "192.168.0.33"),
+                                      Speaker("Esszimmer", "192.168.0.63")])
     monkeypatch.setattr(su.wifi, "scan", lambda: [
         wifi.Network("HomeNet", 80, True, known=True),
         wifi.Network("NewNet", 60, True, known=False),
@@ -625,3 +625,40 @@ def test_worker_output_selection_from_config(cfg, monkeypatch):
     cfg.set("wiim_ip", "192.168.0.33")
     out = RadioWorker._make_output()
     assert isinstance(out, LinkPlay) and out.ip == "192.168.0.33"
+
+
+def test_bt_pick_wiim_switches_linkplay_input(ui, cfg, monkeypatch):
+    """A WiiM used as BT sink keeps listening to WiFi — picking it must
+    flip its input to bluetooth via LinkPlay."""
+    from radiowall import btaudio
+    from radiowall.btaudio import BtDevice
+    from radiowall.display import setup_ui as su
+
+    monkeypatch.setattr(btaudio, "scan", lambda: [
+        BtDevice("54:78:C9:E5:05:FD", "Wiim Amp", paired=True)])
+    monkeypatch.setattr(btaudio, "connect", lambda mac: (True, "connected"))
+
+    switched = []
+
+    class FakeLP:
+        def __init__(self, ip):
+            self.ip = ip
+
+        def switch_mode(self, mode):
+            switched.append((self.ip, mode))
+            return True
+
+        def get_slaves(self):
+            return []
+
+    monkeypatch.setattr(su, "LinkPlay", FakeLP)
+    u, worker = ui
+    worker.set_bt = lambda mac, name: None
+    _into_setup(u)
+    u.handle_rotate(+1)
+    u.handle_short()                       # Speaker (BT)
+    _wait_items(u)
+    u.handle_short()                       # Wiim Amp
+    _wait_items(u)
+    # discovery fixture lists "Wiim Amp" at 192.168.0.33 → input switched
+    assert switched == [("192.168.0.33", "bluetooth")]

@@ -94,6 +94,12 @@ class LinkPlay:
         vol = max(0, min(100, int(vol)))
         return self._ok(f"setPlayerCmd:vol:{vol}")
 
+    def switch_mode(self, mode: str) -> bool:
+        """Select the input source (wifi/bluetooth/line-in/optical).
+        WiiM devices do NOT auto-switch to Bluetooth when a paired
+        device starts streaming — this must be sent explicitly."""
+        return self._ok(f"setPlayerCmd:switchmode:{mode}")
+
     def set_sleep_timer(self, seconds: int) -> bool:
         """Native WiiM auto-shutoff (0 cancels). Seconds, not minutes."""
         return self._ok(f"setSleepTimer:{max(0, int(seconds))}")

@@ -357,12 +357,29 @@ class SetupUI:
                 set_bt = getattr(self._worker, "set_bt", None)
                 if set_bt is not None:
                     set_bt(dev.mac, dev.name)
+                self._maybe_switch_linkplay_input(dev.name)
                 self._flash(f"BT speaker: {dev.name}")
             else:
                 self._flash(f"Connect failed: {msg[:24]}")
             return self._load_bt()
 
         self._spawn(f"Pairing {dev.name}", task)
+
+    @staticmethod
+    def _maybe_switch_linkplay_input(bt_name: str) -> None:
+        """If the chosen BT device is actually a LinkPlay speaker (like
+        a WiiM used as a BT sink), flip its input to Bluetooth — WiiM
+        firmware keeps listening to WiFi otherwise and stays silent.
+        Best-effort: generic BT speakers are unaffected."""
+        try:
+            for sp in discovery.discover(timeout_s=2.0):
+                if sp.name.strip().lower() == bt_name.strip().lower():
+                    LinkPlay(sp.ip).switch_mode("bluetooth")
+                    log.info("switched LinkPlay %s (%s) input to bluetooth",
+                             sp.name, sp.ip)
+                    return
+        except Exception as e:
+            log.debug("linkplay input switch skipped: %s", e)
 
     def _forget_bt(self) -> None:
         with self._lock:

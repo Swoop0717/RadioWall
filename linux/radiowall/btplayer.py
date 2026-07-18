@@ -106,9 +106,21 @@ class BtPlayer:
                 "-f", "alsa", device,
             ],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
+        threading.Thread(target=self._drain_stderr, args=(self._proc,),
+                         name="btplayer-stderr", daemon=True).start()
         log.info("bt playback started: %s -> %s", url, self.name)
+
+    @staticmethod
+    def _drain_stderr(proc: subprocess.Popen) -> None:
+        """ffmpeg problems (dead stream, ALSA/BT failures) must reach
+        the journal — losing them to /dev/null cost a debugging session."""
+        assert proc.stderr is not None
+        for raw in iter(proc.stderr.readline, b""):
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if line:
+                log.info("bt ffmpeg: %s", line)
 
     def _kill_proc(self) -> None:
         proc = self._proc
