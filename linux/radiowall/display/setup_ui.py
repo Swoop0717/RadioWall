@@ -52,7 +52,10 @@ _PW_CHARS = (
 )
 _PW_STRIP = _PW_CONTROLS + _PW_CHARS
 
-_MENU_ITEMS = ["Speaker", "WiFi", "Touch calibration", "Info", "Exit"]
+_MENU_ITEMS = ["Speaker", "WiFi", "Sleep timer", "Touch calibration",
+               "Info", "Exit"]
+_SLEEP_CHOICES = [("Off", 0), ("15 min", 15), ("30 min", 30),
+                  ("60 min", 60), ("90 min", 90)]
 
 
 class SetupUI:
@@ -144,6 +147,8 @@ class SetupUI:
             self._pick_network()
         elif self._screen == "PASSWORD":
             self._pw_key()
+        elif self._screen == "SLEEP":
+            self._pick_sleep()
         elif self._screen in ("INFO", "WIFI_RESULT"):
             self._goto("MENU")
 
@@ -195,6 +200,10 @@ class SetupUI:
         elif item == "WiFi":
             self._goto("WIFI")
             self._start_scan()
+        elif item == "Sleep timer":
+            self._goto("SLEEP")
+            with self._lock:
+                self._items = [label for label, _m in _SLEEP_CHOICES]
         elif item == "Touch calibration":
             self._goto("CALIB")
             self._calib_stage = 0
@@ -235,6 +244,17 @@ class SetupUI:
             self._pw_pos = len(_PW_CONTROLS)
             self._goto("PASSWORD")
 
+    def _pick_sleep(self) -> None:
+        if not (0 <= self._cursor < len(_SLEEP_CHOICES)):
+            return
+        label, minutes = _SLEEP_CHOICES[self._cursor]
+        set_timer = getattr(self._worker, "set_sleep_timer", None)
+        if set_timer is not None:
+            set_timer(minutes)
+        self._flash("Sleep timer off" if minutes == 0
+                    else f"Sleep in {label}")
+        self._goto("MENU")
+
     def _pw_key(self) -> None:
         key = _PW_STRIP[self._pw_pos]
         if key == "[OK]":
@@ -264,6 +284,7 @@ class SetupUI:
                 "SPEAKER": "SPEAKER",
                 "WIFI": "WIFI",
                 "WIFI_RESULT": "WIFI",
+                "SLEEP": "SLEEP TIMER",
                 "PASSWORD": self._pw_ssid[:20],
                 "CALIB": "CALIBRATE",
                 "INFO": "INFO",
@@ -286,6 +307,10 @@ class SetupUI:
                     ]
                 self._draw_list(d, device, fs, rows, self._cursor,
                                 empty="No networks found")
+            elif self._screen == "SLEEP":
+                with self._lock:
+                    rows = list(self._items)
+                self._draw_list(d, device, fs, rows, self._cursor)
             elif self._screen == "WIFI_RESULT":
                 with self._lock:
                     result = self._items[0] if self._items else None

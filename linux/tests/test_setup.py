@@ -230,7 +230,7 @@ def test_setup_known_network_connects_without_password(ui):
 
 def test_setup_calibration_two_taps(ui, cfg):
     u, _ = ui
-    u.handle_rotate(+2)                    # Touch calibration
+    u.handle_rotate(+3)                    # Touch calibration
     u.handle_short()
     assert u._screen == "CALIB"
     u.handle_tap(0.91, 0.88)               # corners in either order
@@ -241,7 +241,7 @@ def test_setup_calibration_two_taps(ui, cfg):
 
 def test_setup_calibration_rejects_degenerate_rect(ui, cfg):
     u, _ = ui
-    u.handle_rotate(+2)
+    u.handle_rotate(+3)
     u.handle_short()
     u.handle_tap(0.5, 0.5)
     u.handle_tap(0.52, 0.9)                # x too close → restart
@@ -256,3 +256,38 @@ def test_setup_long_press_backs_out_and_exits(ui):
     assert u._screen == "MENU" and u.active
     u.handle_long()                        # exit
     assert not u.active
+
+
+# --- needs_animation (smart redraw) ------------------------------------------
+
+def test_needs_animation():
+    from radiowall.display import fonts, screens
+    from radiowall.state import Phase, Snapshot
+
+    class Dev:
+        width, height = 256, 64
+
+    fs = fonts.fonts_for(64)
+    dev = Dev()
+    na = screens.needs_animation
+    assert not na(Snapshot(), dev, fs)                        # idle
+    assert na(Snapshot(phase=Phase.LOADING), dev, fs)         # dots
+    assert na(Snapshot(volume_flash=True), dev, fs)           # flash
+    short = Snapshot(phase=Phase.PLAYING, station_title="FM4")
+    assert not na(short, dev, fs)                             # centered
+    long_ = Snapshot(phase=Phase.PLAYING, station_title=(
+        "Rás 2 — Icelandic public radio with a very long name"))
+    assert na(long_, dev, fs)                                 # scrolls
+
+
+def test_setup_sleep_menu_arms_timer(ui):
+    u, worker = ui
+    worker.sleep_minutes = []
+    worker.set_sleep_timer = worker.sleep_minutes.append
+    u.handle_rotate(+2)                    # MENU: Sleep timer
+    u.handle_short()
+    assert u._screen == "SLEEP"
+    u.handle_rotate(+3)                    # 60 min
+    u.handle_short()
+    assert worker.sleep_minutes == [60]
+    assert u._screen == "MENU"

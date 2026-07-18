@@ -62,7 +62,10 @@ class RotaryEncoder:
 
     def __init__(self, pins: EncoderPins | None = None, *,
                  debounce_s: float = 0.030, reverse: bool = False,
-                 poll_interval_s: float = 0.0008) -> None:
+                 poll_interval_s: float = 0.002) -> None:
+        # 2 ms polling = 500 checks/s. A fast human spin on a 20-detent
+        # EC11 is ~3 rev/s = 240 quadrature edges/s — still 2x headroom,
+        # at roughly half the CPU of the old 0.8 ms loop.
         profile = get_profile()
         pins = pins or EncoderPins()
         self.pins = EncoderPins(

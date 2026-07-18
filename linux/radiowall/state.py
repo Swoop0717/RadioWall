@@ -47,6 +47,7 @@ class Snapshot:
     volume: int = 50
     status_text: str = ""         # transient; "" = none (expiry pre-applied)
     volume_flash: bool = False    # show the volume overlay this frame
+    sleep_min_left: int = 0       # armed sleep timer, minutes left (0 = off)
 
 
 class AppState:
@@ -55,6 +56,7 @@ class AppState:
         self._snap = Snapshot()
         self._status_until = 0.0
         self._flash_until = 0.0
+        self._sleep_deadline: float | None = None
 
     # --- worker-side setters -------------------------------------------
 
@@ -90,6 +92,11 @@ class AppState:
         with self._lock:
             self._snap = replace(self._snap, volume=max(0, min(100, volume)))
 
+    def set_sleep(self, deadline: float | None) -> None:
+        """Arm/disarm the sleep-timer countdown (monotonic deadline)."""
+        with self._lock:
+            self._sleep_deadline = deadline
+
     # --- UI-side helpers ------------------------------------------------
 
     def bump_volume(self, delta: int) -> int:
@@ -105,8 +112,12 @@ class AppState:
         with self._lock:
             snap = self._snap
             status = snap.status_text if now < self._status_until else ""
+            sleep_left = 0
+            if self._sleep_deadline is not None and self._sleep_deadline > now:
+                sleep_left = int((self._sleep_deadline - now) // 60) + 1
             return replace(snap, status_text=status,
-                           volume_flash=now < self._flash_until)
+                           volume_flash=now < self._flash_until,
+                           sleep_min_left=sleep_left)
 
 
 @dataclass

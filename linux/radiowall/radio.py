@@ -68,7 +68,12 @@ class SetVolume:
     volume: int
 
 
-Command = PlayAt | Next | Stop | SetVolume
+@dataclass(frozen=True)
+class SetSleep:
+    minutes: int          # 0 = cancel
+
+
+Command = PlayAt | Next | Stop | SetVolume | SetSleep
 
 
 def wiim_ip() -> str:
@@ -106,6 +111,7 @@ class RadioWorker:
         self._sent_volume: int | None = None
         self._played_at = 0.0            # monotonic time of last play cmd
         self._sync_logged = False        # one "synced" log line per station
+        self._sleep_deadline: float | None = None
         self._sync_fast_s = SYNC_FAST_S  # instance attrs so tests can shrink
         self._sync_slow_s = SYNC_SLOW_S
         self._thread = threading.Thread(target=self._loop, name="radio",
@@ -138,6 +144,10 @@ class RadioWorker:
     def submit(self, cmd: Command) -> None:
         self._queue.put(cmd)
 
+    def set_sleep_timer(self, minutes: int) -> None:
+        """Arm (or cancel with 0) the sleep timer — setup-UI entry point."""
+        self.submit(SetSleep(minutes))
+
     def set_wiim(self, ip: str) -> None:
         """Swap the speaker (called by the setup UI after discovery).
         Just an attribute swap — no network here, this runs on the
@@ -155,6 +165,7 @@ class RadioWorker:
                 cmd = self._queue.get(timeout=0.05)
             except queue.Empty:
                 self._flush_volume()
+                self._check_sleep()
                 continue
             if not self._running:
                 break
@@ -165,7 +176,10 @@ class RadioWorker:
                 self._handle_next()
             elif isinstance(cmd, Stop):
                 self._handle_stop()
+            elif isinstance(cmd, SetSleep):
+                self._handle_sleep(cmd.minutes)
             self._flush_volume()
+            self._check_sleep()
 
     def _sync_loop(self) -> None:
         """Poll the WiiM's playback position and hand it to the decoder,
@@ -340,6 +354,38 @@ class RadioWorker:
             decoder.start(stream_url)
         self._played_at = time.monotonic()
         self._sync_logged = False
+
+    def _handle_sleep(self, minutes: int) -> None:
+        """Arm/cancel the sleep timer. Belt and braces: the WiiM gets its
+        native setSleepTimer too (a few seconds later than ours, so we
+        normally stop it first), so the music dies on time even if this
+        board hangs. The timer survives station changes and manual stops
+        by design — 'off in 60 min' means off in 60, whatever you tune
+        to meanwhile. Only 'Off' disarms it."""
+        native = getattr(self._wiim, "set_sleep_timer", None)
+        if minutes <= 0:
+            self._sleep_deadline = None
+            self._state.set_sleep(None)
+            if native:
+                native(0)
+            self._state.set_status("Sleep timer off")
+            log.info("sleep timer cancelled")
+        else:
+            self._sleep_deadline = time.monotonic() + minutes * 60
+            self._state.set_sleep(self._sleep_deadline)
+            if native:
+                native(minutes * 60 + 10)
+            self._state.set_status(f"Sleep in {minutes} min")
+            log.info("sleep timer armed: %d min", minutes)
+
+    def _check_sleep(self) -> None:
+        if (self._sleep_deadline is not None
+                and time.monotonic() >= self._sleep_deadline):
+            log.info("sleep timer expired — stopping")
+            self._sleep_deadline = None
+            self._state.set_sleep(None)
+            self._handle_stop()
+            self._state.set_status("Good night", ttl_s=10.0)
 
     def _handle_stop(self) -> None:
         if self._use_decoder:

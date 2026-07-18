@@ -145,6 +145,8 @@ def main() -> int:
         fps_t = time.monotonic()
         fps_n = 0
         was_in_setup = False
+        last_snap = None
+        last_blink = -1
         while True:
             now = time.monotonic()
 
@@ -193,15 +195,26 @@ def main() -> int:
             if setup.active:
                 setup.draw(device, frame, fs)
                 was_in_setup = True
+                last_snap = None
             else:
                 if was_in_setup:
                     calib = geo.load_calibration()
                     was_in_setup = False
                 if screen == 0:
-                    screens.draw_status_screen(device, frame, fs,
-                                               state.snapshot())
+                    # Redraw only when something on screen changes: every
+                    # frame while content moves (scroll/flash/loading),
+                    # otherwise only on state change or blink flip. An
+                    # idle wall stops repainting identical pixels 40x/s.
+                    snap = state.snapshot()
+                    blink = (frame // 40) % 2
+                    if (screens.needs_animation(snap, device, fs)
+                            or snap != last_snap or blink != last_blink):
+                        screens.draw_status_screen(device, frame, fs, snap)
+                        last_snap = snap
+                        last_blink = blink
                 else:
                     VISUALIZERS[screen - 1](device, frame, fs)
+                    last_snap = None
 
             frame += 1
             fps_n += 1

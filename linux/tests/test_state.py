@@ -338,3 +338,65 @@ def test_sync_poller_ignores_buffering_position(monkeypatch):
         assert calls == []
     finally:
         w.stop()
+
+
+# --- sleep timer -------------------------------------------------------------
+
+def test_snapshot_sleep_countdown():
+    state = AppState()
+    assert state.snapshot().sleep_min_left == 0
+    state.set_sleep(time.monotonic() + 90)      # 1.5 min out
+    assert state.snapshot().sleep_min_left == 2  # ceil-ish display
+    state.set_sleep(time.monotonic() + 30)
+    assert state.snapshot().sleep_min_left == 1
+    state.set_sleep(None)
+    assert state.snapshot().sleep_min_left == 0
+
+
+class SleepWiim(FakeWiim):
+    def __init__(self):
+        super().__init__()
+        self.sleep_calls = []
+
+    def set_sleep_timer(self, seconds):
+        self.sleep_calls.append(seconds)
+        return True
+
+
+def test_sleep_timer_arms_native_and_state():
+    from radiowall.radio import SetSleep
+
+    rg = FakeRG({"p1": _stations(1)})
+    wiim = SleepWiim()
+    state, w = _worker(rg, wiim=wiim)
+    try:
+        w.submit(SetSleep(30))
+        _drain(w)
+        assert wiim.sleep_calls == [30 * 60 + 10]   # native armed, +grace
+        assert state.snapshot().sleep_min_left == 30
+        w.submit(SetSleep(0))
+        _drain(w)
+        assert wiim.sleep_calls[-1] == 0            # native cancelled
+        assert state.snapshot().sleep_min_left == 0
+    finally:
+        w.stop()
+
+
+def test_sleep_timer_expiry_stops_playback():
+    rg = FakeRG({"p1": _stations(2)})
+    wiim = SleepWiim()
+    state, w = _worker(rg, wiim=wiim)
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        _drain(w)
+        assert state.snapshot().phase == Phase.PLAYING
+        w._sleep_deadline = time.monotonic() - 0.1  # force expiry
+        w._state.set_sleep(w._sleep_deadline)
+        time.sleep(0.3)                             # loop tick notices
+        snap = state.snapshot()
+        assert wiim.stopped == 1
+        assert snap.phase == Phase.IDLE
+        assert snap.status_text == "Good night"
+        assert snap.sleep_min_left == 0
+    finally:
+        w.stop()

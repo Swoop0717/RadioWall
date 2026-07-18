@@ -12,7 +12,7 @@ Demo (no hardware):
 
 from __future__ import annotations
 
-from luma.core.render import canvas
+from PIL import Image, ImageDraw
 
 from radiowall.display import fonts
 from radiowall.state import Phase, Snapshot
@@ -23,19 +23,69 @@ AMBER_DIM = (110, 75, 0)
 SCROLL_PX_PER_FRAME = 2
 SCROLL_GAP = "   ·   "
 
+# Rasterizing a full-width big-font string is the most expensive draw
+# call we have (~20-40 ms on the A733 — it capped the whole loop at
+# ~22 fps). Render the looped text ONCE per title into a strip image,
+# then scroll by pasting a moving window — the per-frame cost becomes a
+# memcpy. Keyed by (text, font, fill); a handful of entries suffices
+# since titles change rarely.
+_strip_cache: dict[tuple, Image.Image] = {}
+_STRIP_CACHE_MAX = 8
 
-def scroll_text(draw, text: str, font, y: int, width: int, frame: int,
-                fill=AMBER) -> None:
+
+def _scroll_strip(text: str, font, fill, mode: str) -> Image.Image:
+    key = (text, id(font), fill, mode)
+    strip = _strip_cache.get(key)
+    if strip is None:
+        looped = text + SCROLL_GAP
+        bbox = ImageDraw.Draw(Image.new(mode, (1, 1))).textbbox(
+            (0, 0), looped, font=font)
+        w, h = bbox[2], bbox[3] + 2
+        # draw the loop twice so any window of `loop_w` starts in-bounds
+        strip = Image.new(mode, (2 * w, h))
+        d = ImageDraw.Draw(strip)
+        d.text((0, 0), looped, font=font, fill=fill)
+        d.text((w, 0), looped, font=font, fill=fill)
+        if len(_strip_cache) >= _STRIP_CACHE_MAX:
+            _strip_cache.pop(next(iter(_strip_cache)))
+        _strip_cache[key] = strip
+    return strip
+
+
+def scroll_text(img: Image.Image, draw, text: str, font, y: int, width: int,
+                frame: int, fill=AMBER) -> None:
     """Horizontally scroll `text` if wider than `width`, else center it."""
     text_w = int(draw.textlength(text, font=font))
     if text_w <= width:
         draw.text(((width - text_w) // 2, y), text, font=font, fill=fill)
         return
-    looped = text + SCROLL_GAP
-    loop_w = int(draw.textlength(looped, font=font))
+    strip = _scroll_strip(text, font, fill, img.mode)
+    loop_w = strip.width // 2
     offset = (frame * SCROLL_PX_PER_FRAME) % loop_w
-    draw.text((-offset, y), looped, font=font, fill=fill)
-    draw.text((-offset + loop_w, y), looped, font=font, fill=fill)
+    window = strip.crop((offset, 0, offset + width, strip.height))
+    img.paste(window, (0, y))
+
+
+def needs_animation(snap: Snapshot, device, fs: fonts.FontSet) -> bool:
+    """True when the status screen has per-frame motion right now
+    (scrolling text, loading dots, volume flash). When False the main
+    loop skips redraws entirely — the panel keeps showing the last
+    frame, so an idle RadioWall stops burning CPU repainting identical
+    pixels 40x/s. The idle hint blink is handled by the caller (it only
+    changes every ~0.8 s)."""
+    if snap.volume_flash or snap.phase is Phase.LOADING:
+        return True
+    if snap.status_text:
+        text, font = snap.status_text, fs.big
+    elif snap.phase is Phase.PLAYING and snap.station_title:
+        text = snap.station_title
+        font = fs.pick_big(text)
+    else:
+        return False
+    try:
+        return font.getlength(text) > device.width
+    except AttributeError:          # PIL default bitmap font
+        return len(text) * 8 > device.width
 
 
 def _band_geometry(device, fs: fonts.FontSet):
@@ -52,19 +102,25 @@ def draw_status_screen(device, frame: int, fs: fonts.FontSet,
     pad = max(2, W // 64)
     top_sep, bot_sep, band_y = _band_geometry(device, fs)
 
-    with canvas(device) as draw:
-        if snap.phase is Phase.IDLE and not snap.status_text:
-            _idle(draw, W, H, fs, frame)
-        else:
-            _header(draw, snap, fs, pad)
-            draw.line((0, top_sep, W, top_sep), fill=AMBER_DIM)
-            draw.line((0, bot_sep, W, bot_sep), fill=AMBER_DIM)
-            _band(draw, snap, fs, band_y, W, frame)
+    # Own image instead of luma's canvas() so the scroll band can paste
+    # its pre-rendered strip (canvas only exposes an ImageDraw).
+    img = Image.new(device.mode, (W, H))
+    draw = ImageDraw.Draw(img)
 
-        if snap.volume_flash:
-            _volume_overlay(draw, snap, fs, W, H, bot_sep)
-        elif snap.phase is not Phase.IDLE or snap.status_text:
-            _footer(draw, snap, fs, pad, bot_sep, W)
+    if snap.phase is Phase.IDLE and not snap.status_text:
+        _idle(draw, W, H, fs, frame)
+    else:
+        _header(draw, snap, fs, pad)
+        draw.line((0, top_sep, W, top_sep), fill=AMBER_DIM)
+        draw.line((0, bot_sep, W, bot_sep), fill=AMBER_DIM)
+        _band(img, draw, snap, fs, band_y, W, frame)
+
+    if snap.volume_flash:
+        _volume_overlay(draw, snap, fs, W, H, bot_sep)
+    elif snap.phase is not Phase.IDLE or snap.status_text:
+        _footer(draw, snap, fs, pad, bot_sep, W)
+
+    device.display(img)
 
 
 def _header(draw, snap: Snapshot, fs, pad: int) -> None:
@@ -85,22 +141,26 @@ def _header(draw, snap: Snapshot, fs, pad: int) -> None:
     draw.text((pad, pad), left, font=font, fill=AMBER)   # hit the counter
 
 
-def _band(draw, snap: Snapshot, fs, band_y: int, W: int, frame: int) -> None:
+def _band(img, draw, snap: Snapshot, fs, band_y: int, W: int,
+          frame: int) -> None:
     if snap.status_text:
-        scroll_text(draw, snap.status_text, fs.big, band_y, W, frame)
+        scroll_text(img, draw, snap.status_text, fs.big, band_y, W, frame)
     elif snap.phase is Phase.LOADING:
         dots = "." * (1 + (frame // 12) % 3)
-        scroll_text(draw, f"Tuning{dots}", fs.big, band_y, W, frame=0)
+        scroll_text(img, draw, f"Tuning{dots}", fs.big, band_y, W, frame=0)
     else:
         title = snap.station_title
-        scroll_text(draw, title, fs.pick_big(title), band_y, W, frame)
+        scroll_text(img, draw, title, fs.pick_big(title), band_y, W, frame)
 
 
 def _footer(draw, snap: Snapshot, fs, pad: int, bot_sep: int, W: int) -> None:
     # Just the volume — no state word. If music plays you hear it, if it's
     # tuning the band says so, and idle has its own screen.
     y = bot_sep + 2   # tight: small font + descenders must fit in H-bot_sep
-    draw.text((pad, y), f"vol {snap.volume}", font=fs.small, fill=AMBER)
+    label = f"vol {snap.volume}"
+    if snap.sleep_min_left:
+        label += f"   sleep {snap.sleep_min_left}m"
+    draw.text((pad, y), label, font=fs.small, fill=AMBER)
 
 
 def _idle(draw, W: int, H: int, fs, frame: int) -> None:

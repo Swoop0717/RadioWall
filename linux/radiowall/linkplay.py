@@ -94,6 +94,10 @@ class LinkPlay:
         vol = max(0, min(100, int(vol)))
         return self._ok(f"setPlayerCmd:vol:{vol}")
 
+    def set_sleep_timer(self, seconds: int) -> bool:
+        """Native WiiM auto-shutoff (0 cancels). Seconds, not minutes."""
+        return self._ok(f"setSleepTimer:{max(0, int(seconds))}")
+
     def get_status(self) -> dict | None:
         """getPlayerStatus as a dict; `vol` normalized to int (or absent)."""
         body = self._request("getPlayerStatus", retries=1)
