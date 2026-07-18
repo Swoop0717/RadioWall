@@ -63,6 +63,10 @@ def make_device(mock: bool | None = None, scale: int | None = None):
     from radiowall.display.mirror import install_mirror
     install_mirror(device)
 
+    # burn-in protection: default on for the always-on OLED only
+    from radiowall.display.pixel_shift import install_pixel_shift
+    install_pixel_shift(device, default_on=(driver == "ssd1322"))
+
     return device
 
 

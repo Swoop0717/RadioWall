@@ -383,3 +383,45 @@ def test_band_text_combines_station_and_track():
     echo = Snapshot(phase=Phase.PLAYING, station_title="FM4",
                     track_title="fm4")       # station name echoed back
     assert band_text(echo) == "FM4"
+
+
+# --- pixel shift ---------------------------------------------------------------
+
+def test_pixel_shift_orbits_and_moves_content(monkeypatch):
+    from PIL import Image
+    from radiowall.display import pixel_shift as ps
+
+    # orbit covers 4 distinct positions, one step per period
+    offs = {ps.offset_at(i * ps.PERIOD_S + 1) for i in range(4)}
+    assert offs == {(0, 0), (1, 0), (1, 1), (0, 1)}
+
+    class Dev:
+        def __init__(self):
+            self.shown = None
+
+        def display(self, img):
+            self.shown = img
+
+    monkeypatch.delenv("RADIOWALL_PIXEL_SHIFT", raising=False)
+    dev = Dev()
+    ps.install_pixel_shift(dev, default_on=True)
+    img = Image.new("RGB", (8, 8))
+    img.putpixel((0, 0), (255, 0, 0))
+
+    monkeypatch.setattr(ps.time, "monotonic", lambda: ps.PERIOD_S * 2 + 1)
+    dev.display(img)                       # orbit position (1, 1)
+    assert dev.shown.getpixel((1, 1)) == (255, 0, 0)
+    assert dev.shown.getpixel((0, 0)) == (0, 0, 0)
+
+
+def test_pixel_shift_env_disable(monkeypatch):
+    from radiowall.display import pixel_shift as ps
+
+    class Dev:
+        def display(self, img):
+            pass
+
+    monkeypatch.setenv("RADIOWALL_PIXEL_SHIFT", "0")
+    dev = Dev()
+    ps.install_pixel_shift(dev, default_on=True)
+    assert "display" not in dev.__dict__   # no wrapper installed
