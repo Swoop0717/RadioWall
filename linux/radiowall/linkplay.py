@@ -119,6 +119,34 @@ class LinkPlay:
         status = self.get_status()
         return status.get("vol") if status else None
 
+    # -------- multiroom ---------------------------------------------------
+    # LinkPlay grouping: the JOIN command goes to the prospective SLAVE
+    # (pointing it at its master); kick/ungroup/slave-list go to the MASTER.
+
+    def get_slave_ips(self) -> list[str]:
+        """IPs currently grouped under this speaker (it as master)."""
+        body = self._request("multiroom:getSlaveList", retries=1)
+        if not body:
+            return []
+        try:
+            data = json.loads(body)
+            return [s["ip"] for s in data.get("slave_list") or []]
+        except (ValueError, KeyError, TypeError):
+            return []
+
+    def join_master(self, master_ip: str) -> bool:
+        """Make THIS speaker a slave of master_ip."""
+        return self._ok(
+            f"ConnectMasterAp:JoinGroupMaster:eth{master_ip}:wifi0.0.0.0")
+
+    def kick_slave(self, slave_ip: str) -> bool:
+        """(On the master) remove one slave from the group."""
+        return self._ok(f"multiroom:SlaveKickout:{slave_ip}")
+
+    def ungroup(self) -> bool:
+        """(On the master) dissolve the whole group."""
+        return self._ok("multiroom:Ungroup")
+
     def get_position(self) -> tuple[str, float] | None:
         """Playback state + position for visualizer sync: ("play", 12.3)
         — curpos is milliseconds-as-string in getPlayerStatus. Single

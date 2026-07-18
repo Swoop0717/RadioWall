@@ -139,6 +139,7 @@ class _Decoder:
         self._titles: list[tuple[int, str]] = []  # (frame idx heard, title)
         self._last_title: Optional[str] = None
         self._icy_resp: Optional[requests.Response] = None
+        self._peak_rms = 0.0                  # loudest hop since start()
         self._lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
@@ -478,6 +479,8 @@ class _Decoder:
             self._history.append(
                 _Frame(list(levels), [float(v) for v in wave], rms))
             self._frames_total += 1
+            if rms > self._peak_rms:
+                self._peak_rms = rms
 
     def _read_pcm(self) -> bool:
         """Read PCM until EOF/stop; returns True if any audio was decoded
@@ -555,3 +558,13 @@ def get_stream_title() -> str:
     if _singleton is None:
         return ""
     return _singleton.get_stream_title()
+
+
+def get_stats() -> Optional[tuple[float, float]]:
+    """(seconds_decoded, peak_rms) since the decoder started on this
+    station — the silent/dead-stream detector's input. None when no
+    decoder is running."""
+    if _singleton is None:
+        return None
+    with _singleton._lock:
+        return (_singleton._frames_total * _CHUNK_S, _singleton._peak_rms)

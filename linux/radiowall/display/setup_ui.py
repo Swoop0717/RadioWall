@@ -11,7 +11,9 @@ Screens:
   FAVORITES  starred history entries
   SLEEP      oven-style dial, 10/30-min steps
   SETUP_MENU Speaker · WiFi · Touch calibration · Info
-  SPEAKER    SSDP-discover LinkPlay devices, pick → config['wiim_ip']
+  SPEAKER    SSDP-discover LinkPlay devices; press = make it the main
+             speaker (● marker), 2x = join/remove it from the main
+             speaker's multiroom group (+ marker)
   WIFI       nmcli scan, pick an SSID (known ones connect directly)
   PASSWORD   rotary character entry for WiFi passwords
   CALIB      tap top-left then bottom-right corner → config['touch_calib']
@@ -38,6 +40,7 @@ from luma.core.render import canvas
 
 from radiowall import config, discovery, history, wifi
 from radiowall.display import fonts
+from radiowall.linkplay import LinkPlay
 
 log = logging.getLogger(__name__)
 
@@ -213,6 +216,8 @@ class SetupUI:
             self._pw_text = self._pw_text[:-1]
         elif self._screen in ("HISTORY", "FAVORITES"):
             self._toggle_star()
+        elif self._screen == "SPEAKER":
+            self._toggle_group()
 
     def handle_tap(self, x: float, y: float) -> None:
         """Touch input while setup is open — used by calibration."""
@@ -256,7 +261,7 @@ class SetupUI:
             self._goto("SETUP_MENU")
         elif item == "Speaker":
             self._goto("SPEAKER")
-            self._spawn("Searching speakers", discovery.discover)
+            self._spawn("Searching speakers", self._load_speakers)
         elif item == "WiFi":
             self._goto("WIFI")
             self._start_scan()
@@ -281,17 +286,59 @@ class SetupUI:
     def _start_scan(self) -> None:
         self._spawn("Scanning WiFi", wifi.scan)
 
+    def _load_speakers(self):
+        """Discovered speakers annotated with (is_main, grouped)."""
+        speakers = discovery.discover()
+        main_ip = str(config.get("wiim_ip") or "")
+        slaves: set[str] = set()
+        if main_ip:
+            try:
+                slaves = set(LinkPlay(main_ip).get_slave_ips())
+            except Exception:
+                pass
+        return [(sp, sp.ip == main_ip, sp.ip in slaves) for sp in speakers]
+
     def _pick_speaker(self) -> None:
         with self._lock:
             if not (0 <= self._cursor < len(self._items)):
                 return
-            sp = self._items[self._cursor]
+            sp, is_main, _grouped = self._items[self._cursor]
+        if is_main:
+            self._flash(f"{sp.name} is already the speaker")
+            return
         config.set("wiim_ip", sp.ip)
         config.set("wiim_name", sp.name)
         if self._worker is not None:
             self._worker.set_wiim(sp.ip)
         self._flash(f"Speaker: {sp.name}")
         self._goto("MENU")
+
+    def _toggle_group(self) -> None:
+        """2x on a speaker row: join it to / remove it from the main
+        speaker's multiroom group."""
+        with self._lock:
+            if not (0 <= self._cursor < len(self._items)):
+                return
+            sp, is_main, grouped = self._items[self._cursor]
+        main_ip = str(config.get("wiim_ip") or "")
+        if not main_ip:
+            self._flash("Pick a main speaker first")
+            return
+        if is_main:
+            self._flash("That IS the main speaker")
+            return
+
+        def task():
+            if grouped:
+                ok = LinkPlay(main_ip).kick_slave(sp.ip)
+                self._flash(f"{sp.name} removed" if ok else "Failed")
+            else:
+                # join goes to the SLAVE, pointing it at the master
+                ok = LinkPlay(sp.ip).join_master(main_ip)
+                self._flash(f"+ {sp.name} grouped" if ok else "Failed")
+            return self._load_speakers()
+
+        self._spawn("Updating group", task)
 
     def _pick_network(self) -> None:
         with self._lock:
@@ -407,7 +454,11 @@ class SetupUI:
                                 empty=empty)
             elif self._screen == "SPEAKER":
                 with self._lock:
-                    rows = [f"{s.name}  {s.ip}" for s in self._items]
+                    rows = [
+                        f"{'●' if main else '+' if grouped else ' '} "
+                        f"{sp.name}  {sp.ip}"
+                        for sp, main, grouped in self._items
+                    ]
                 self._draw_list(d, device, fs, rows, self._cursor,
                                 empty="No speakers found")
             elif self._screen == "WIFI":
@@ -448,6 +499,7 @@ class SetupUI:
             "SLEEP": "turn·time  press·set  hold·back",
             "HISTORY": "press·play  2x·star  hold·back",
             "FAVORITES": "press·play  2x·unstar  hold·back",
+            "SPEAKER": "press·main  2x·group  hold·back",
         }.get(self._screen, "hold·back")
         hw = d.textlength(hint, font=fs.tiny)
         d.text((W - hw - 2, 0), hint, font=fs.tiny, fill=AMBER_GHOST)

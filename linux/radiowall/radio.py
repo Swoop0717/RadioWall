@@ -45,6 +45,15 @@ SYNC_FAST_S = 2.0
 SYNC_SLOW_S = 10.0
 SYNC_FAST_WINDOW_S = 30.0
 
+# Silent-station skip: some streams connect fine but carry no audio at
+# all. Evaluated ONCE per station, ~20 s in: enough decoded audio with
+# a peak RMS below the floor (digital silence ~1e-5, quiet speech
+# ~0.05) → auto-NEXT. Checked before the 30 s history threshold, so
+# skipped duds are never recorded.
+SILENT_CHECK_AT_S = 20.0
+SILENT_MIN_DECODED_S = 10.0
+SILENCE_RMS = 0.0015
+
 
 # --- commands ------------------------------------------------------------
 
@@ -132,6 +141,8 @@ class RadioWorker:
         self._pending_record: history.Entry | None = None
         self._record_at = 0.0
         self._current_entry: history.Entry | None = None
+        self._silent_check_at_s = SILENT_CHECK_AT_S
+        self._silent_checked = 0.0       # played_at already evaluated
         self._sync_fast_s = SYNC_FAST_S  # instance attrs so tests can shrink
         self._sync_slow_s = SYNC_SLOW_S
         self._thread = threading.Thread(target=self._loop, name="radio",
@@ -207,6 +218,7 @@ class RadioWorker:
                 self._flush_volume()
                 self._check_sleep()
                 self._check_record()
+                self._check_silent()
                 continue
             if not self._running:
                 break
@@ -226,6 +238,7 @@ class RadioWorker:
             self._flush_volume()
             self._check_sleep()
             self._check_record()
+            self._check_silent()
 
     def _sync_loop(self) -> None:
         """Poll the WiiM's playback position and hand it to the decoder,
@@ -320,6 +333,8 @@ class RadioWorker:
 
     # --- handlers -------------------------------------------------------
 
+    _DEAD_TAP_HOPS = 5      # empty cities tried before giving up
+
     def _handle_play_at(self, lat: float, lon: float) -> None:
         place = self._places.find_nearest(lat, lon)
         if place is None:
@@ -329,12 +344,31 @@ class RadioWorker:
                  place.name, place.country)
         self._state.set_loading(place.name, country_name(place.country))
         stations = self._rg.get_stations(place.id)
+
+        # dead-tap auto-hop: a city can lose its stations between the
+        # weekly places refreshes — the map must never feel broken, so
+        # silently try the next-nearest cities instead of giving up
+        visited = {place.id}
+        hops = 0
+        while not stations and hops < self._DEAD_TAP_HOPS:
+            nxt = self._places.find_nearest_excluding(lat, lon, visited)
+            if nxt is None:
+                break
+            log.info("no stations in %s — hopping to %s, %s",
+                     place.name, nxt.name, nxt.country)
+            place = nxt
+            visited.add(place.id)
+            self._state.set_loading(place.name, country_name(place.country))
+            stations = self._rg.get_stations(place.id)
+            hops += 1
+
         if not stations:
             self._state.set_status("No stations found")
             self._to_idle_or_playing()
             return
         self._session = Session(origin_lat=lat, origin_lon=lon,
                                 place=place, stations=stations)
+        self._session.visited.update(visited)   # NEXT skips the duds too
         self._play_next_in_session()
 
     def _handle_next(self) -> None:
@@ -481,6 +515,25 @@ class RadioWorker:
                 and time.monotonic() >= self._record_at):
             history.add(self._pending_record)
             self._pending_record = None
+
+    def _check_silent(self) -> None:
+        """Once per station, ~20 s in: skip streams that connect but
+        deliver only digital silence. Uses the decoder tap's loudness —
+        the WiiM plays the same bytes, silence is silence."""
+        if (not self._use_decoder or self._session is None
+                or self._silent_checked == self._played_at
+                or time.monotonic() - self._played_at < self._silent_check_at_s):
+            return
+        self._silent_checked = self._played_at
+        stats = decoder.get_stats()
+        if stats is None:
+            return
+        seconds, peak = stats
+        if seconds >= SILENT_MIN_DECODED_S and peak < SILENCE_RMS:
+            log.info("silent stream (%.0fs decoded, peak rms %.5f) — "
+                     "skipping", seconds, peak)
+            self._state.set_status("Silent stream — next")
+            self._handle_next()
 
     def _handle_stop(self) -> None:
         if self._use_decoder:

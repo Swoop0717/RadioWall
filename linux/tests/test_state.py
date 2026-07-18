@@ -400,3 +400,66 @@ def test_sleep_timer_expiry_stops_playback():
         assert snap.sleep_min_left == 0
     finally:
         w.stop()
+
+
+# --- dead-tap auto-hop ---------------------------------------------------------
+
+def test_dead_tap_hops_to_nearest_city_with_stations():
+    # p1 (nearest) has no stations; p2 does — tap must land on p2
+    rg = FakeRG({"p2": _stations(2, "b")})
+    state, w = _worker(rg)
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        _drain(w)
+        snap = state.snapshot()
+        assert snap.phase == Phase.PLAYING
+        assert snap.place_name == "Beta"
+        assert snap.station_title == "b 0"
+        # the empty city is marked visited: NEXT after exhausting Beta
+        # must go to Gamma, not back to Alpha
+        assert "p1" in w._session.visited
+    finally:
+        w.stop()
+
+
+def test_dead_tap_gives_up_after_no_city_has_stations():
+    rg = FakeRG({})                        # nowhere has stations
+    state, w = _worker(rg)
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        _drain(w)
+        assert state.snapshot().status_text == "No stations found"
+        assert state.snapshot().phase == Phase.IDLE
+    finally:
+        w.stop()
+
+
+# --- silent-station skip --------------------------------------------------------
+
+def test_silent_station_skipped_once_then_stays(monkeypatch):
+    from radiowall import radio as radio_mod
+
+    stats_holder = [(15.0, 0.00001)]       # silent at first check
+    monkeypatch.setattr(radio_mod.decoder, "start", lambda url: None)
+    monkeypatch.setattr(radio_mod.decoder, "stop", lambda: None)
+    monkeypatch.setattr(radio_mod.decoder, "get_stats",
+                        lambda: stats_holder[0])
+
+    rg = FakeRG({"p1": _stations(2)})
+    wiim = FakeWiim()
+    state = AppState()
+    w = RadioWorker(state, FakePlaces(), rg=rg, wiim=wiim, use_decoder=True)
+    w._silent_check_at_s = 0.15
+    w.start()
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        deadline = time.time() + 2.0
+        while len(wiim.played) < 2 and time.time() < deadline:
+            time.sleep(0.02)
+        assert len(wiim.played) == 2       # S0 silent → skipped to S1
+        stats_holder[0] = (15.0, 0.2)      # S1 has real audio
+        time.sleep(0.4)                    # its own check passes quietly
+        assert len(wiim.played) == 2
+        assert state.snapshot().station_title == "S 1"
+    finally:
+        w.stop()

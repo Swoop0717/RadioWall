@@ -425,3 +425,92 @@ def test_pixel_shift_env_disable(monkeypatch):
     dev = Dev()
     ps.install_pixel_shift(dev, default_on=True)
     assert "display" not in dev.__dict__   # no wrapper installed
+
+
+# --- multiroom -----------------------------------------------------------------
+
+def test_linkplay_multiroom_command_formats(monkeypatch):
+    from radiowall.linkplay import LinkPlay
+
+    calls = []
+    lp = LinkPlay("10.0.0.9")
+
+    def fake_request(cmd, retries=2):
+        calls.append(cmd)
+        if cmd == "multiroom:getSlaveList":
+            return ('{"slaves":1,"slave_list":[{"name":"Esszimmer",'
+                    '"ip":"10.0.0.7"}]}')
+        return "OK"
+
+    monkeypatch.setattr(lp, "_request", fake_request)
+    assert lp.get_slave_ips() == ["10.0.0.7"]
+    assert lp.join_master("10.0.0.9")
+    assert lp.kick_slave("10.0.0.7")
+    assert lp.ungroup()
+    assert "ConnectMasterAp:JoinGroupMaster:eth10.0.0.9:wifi0.0.0.0" in calls
+    assert "multiroom:SlaveKickout:10.0.0.7" in calls
+    assert "multiroom:Ungroup" in calls
+
+
+def test_speaker_screen_group_toggle(ui, cfg, monkeypatch):
+    from radiowall.display import setup_ui as su
+
+    cfg.set("wiim_ip", "192.168.0.33")     # Wiim Amp is main
+
+    actions = []
+
+    class FakeLP:
+        def __init__(self, ip):
+            self.ip = ip
+
+        def get_slave_ips(self):
+            return ["192.168.0.63"] if any(
+                a == ("join", "192.168.0.63") for a in actions) else []
+
+        def join_master(self, master_ip):
+            actions.append(("join", self.ip))
+            return True
+
+        def kick_slave(self, ip):
+            actions.append(("kick", ip))
+            return True
+
+    monkeypatch.setattr(su, "LinkPlay", FakeLP)
+    u, worker = ui
+    _into_setup(u)
+    u.handle_short()                       # Speaker
+    _wait_items(u)
+    with u._lock:
+        assert u._items[0][1] is True      # Wiim Amp marked as main
+        assert u._items[1][2] is False     # Esszimmer not grouped
+    u.handle_rotate(+1)                    # Esszimmer
+    u.handle_double()                      # group it
+    _wait_items(u)
+    assert ("join", "192.168.0.63") in actions
+    with u._lock:
+        assert u._items[1][2] is True      # now shown grouped
+    u.handle_double()                      # ungroup
+    _wait_items(u)
+    assert ("kick", "192.168.0.63") in actions
+
+
+def test_speaker_pick_main_is_noop(ui, cfg, monkeypatch):
+    from radiowall.display import setup_ui as su
+
+    cfg.set("wiim_ip", "192.168.0.33")
+
+    class FakeLP:
+        def __init__(self, ip):
+            pass
+
+        def get_slave_ips(self):
+            return []
+
+    monkeypatch.setattr(su, "LinkPlay", FakeLP)
+    u, worker = ui
+    _into_setup(u)
+    u.handle_short()
+    _wait_items(u)
+    u.handle_short()                       # press on the main speaker
+    assert u._screen == "SPEAKER"          # stays put, no re-set
+    assert worker.wiim_ips == []
