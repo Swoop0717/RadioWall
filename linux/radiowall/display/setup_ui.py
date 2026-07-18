@@ -448,10 +448,14 @@ class SetupUI:
                         f" — {e.place_name}"
                         for e in self._items
                     ]
-                empty = ("Nothing played yet" if self._screen == "HISTORY"
-                         else "No favorites — ★ in History with 2x press")
-                self._draw_list(d, device, fs, rows, self._cursor,
-                                empty=empty)
+                if rows:
+                    self._draw_list(d, device, fs, rows, self._cursor)
+                elif self._screen == "HISTORY":
+                    self._draw_center(d, device, fs, "Nothing played yet",
+                                      "stations appear after 30s of listening")
+                else:
+                    self._draw_center(d, device, fs, "No favorites yet",
+                                      "2x-press in History (or while playing)")
             elif self._screen == "SPEAKER":
                 with self._lock:
                     rows = [
@@ -518,15 +522,25 @@ class SetupUI:
             if empty:
                 self._draw_center(d, device, fs, empty, "")
             return
-        row_h = 13
-        visible = max(1, (H - 14) // row_h)
+        # row height from real font metrics: the old fixed 13px grid was
+        # shorter than the 15px (ascent+descent) text, so descenders
+        # stuck out under the highlight and the next row's highlight
+        # painted over them
+        try:
+            asc, desc = fs.small.getmetrics()
+        except AttributeError:
+            asc, desc = 10, 2
+        text_h = asc + desc
+        row_h = text_h + 1
+        top = 14
+        visible = max(1, (H - top) // row_h)
         first = max(0, min(cursor - visible // 2,
                            len(rows) - visible)) if cursor >= 0 else 0
-        y = 14
+        y = top
         for i in range(first, min(first + visible, len(rows))):
             selected = i == cursor
             if selected:
-                d.rectangle((0, y - 1, W, y + row_h - 2), fill=AMBER_GHOST)
+                d.rectangle((0, y - 1, W, y + text_h), fill=AMBER_GHOST)
                 d.text((2, y), "▸", font=fs.small, fill=AMBER_BRIGHT)
             text = rows[i]
             avail = W - 16
@@ -539,8 +553,8 @@ class SetupUI:
         if len(rows) > visible:                    # scroll indicator
             frac0 = first / len(rows)
             frac1 = (first + visible) / len(rows)
-            d.rectangle((W - 2, 14 + int(frac0 * (H - 14)),
-                         W - 1, 14 + int(frac1 * (H - 14))), fill=AMBER_DIM)
+            d.rectangle((W - 2, top + int(frac0 * (H - top)),
+                         W - 1, top + int(frac1 * (H - top))), fill=AMBER_DIM)
 
     def _draw_password(self, d, device, fs) -> None:
         W, H = device.width, device.height
@@ -632,7 +646,12 @@ class SetupUI:
             d.text(((W - tw) // 2, int(H * 0.45)), text, font=fs.small,
                    fill=AMBER)
         if self._notice and time.monotonic() < self._notice_until:
+            try:
+                t_asc, t_desc = fs.tiny.getmetrics()
+            except AttributeError:
+                t_asc, t_desc = 8, 2
+            toast_h = t_asc + t_desc + 2
             tw = d.textlength(self._notice, font=fs.tiny)
-            d.rectangle((0, H - 12, W, H), fill=(0, 0, 0))
-            d.text(((W - tw) // 2, H - 11), self._notice, font=fs.tiny,
-                   fill=AMBER_BRIGHT)
+            d.rectangle((0, H - toast_h, W, H), fill=(0, 0, 0))
+            d.text(((W - tw) // 2, H - toast_h + 1), self._notice,
+                   font=fs.tiny, fill=AMBER_BRIGHT)
