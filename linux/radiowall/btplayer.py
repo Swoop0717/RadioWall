@@ -40,7 +40,6 @@ class BtPlayer:
         self._url: str | None = None
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
-        self._supervisor: threading.Thread | None = None
         self._generation = 0
 
     # -------- LinkPlay-compatible surface --------------------------------
@@ -58,12 +57,11 @@ class BtPlayer:
             self._generation += 1
             gen = self._generation
         self._kill_proc()
-        self._spawn(url)
-        if self._supervisor is None or not self._supervisor.is_alive():
-            self._supervisor = threading.Thread(
-                target=self._supervise, args=(gen,), name="btplayer",
-                daemon=True)
-            self._supervisor.start()
+        if not self._spawn_if_current(url, gen):
+            return False
+        # one supervisor per generation; stale ones exit on the gen check
+        threading.Thread(target=self._supervise, args=(gen,),
+                         name="btplayer", daemon=True).start()
         return True
 
     def stop(self) -> bool:
@@ -72,6 +70,13 @@ class BtPlayer:
             self._generation += 1
         self._kill_proc()
         return True
+
+    def close(self) -> None:
+        """Called by the worker when the output is swapped away from
+        this instance. MUST kill our ffmpeg: the bluealsa PCM is
+        exclusive, and an orphaned instance blocks the successor with
+        'Device or resource busy' forever."""
+        self.stop()
 
     def set_volume(self, vol: int) -> bool:
         vol = max(0, min(100, int(vol)))
@@ -94,9 +99,13 @@ class BtPlayer:
 
     # -------- internals ----------------------------------------------------
 
-    def _spawn(self, url: str) -> None:
+    def _spawn_if_current(self, url: str, gen: int) -> bool:
+        """Spawn ffmpeg, then commit it only if this generation still
+        owns the player — a concurrent play()/stop()/close() may have
+        superseded us while Popen was underway. A stale process is
+        killed instantly so it can never squat on the exclusive PCM."""
         device = f"bluealsa:DEV={self.mac},PROFILE=a2dp"
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             [
                 "ffmpeg", "-nostdin", "-loglevel", "warning",
                 "-user_agent", "VLC/3.0.20 LibVLC/3.0.20",
@@ -108,9 +117,18 @@ class BtPlayer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
-        threading.Thread(target=self._drain_stderr, args=(self._proc,),
+        with self._lock:
+            if self._generation != gen or self._url is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return False
+            self._proc = proc
+        threading.Thread(target=self._drain_stderr, args=(proc,),
                          name="btplayer-stderr", daemon=True).start()
         log.info("bt playback started: %s -> %s", url, self.name)
+        return True
 
     @staticmethod
     def _drain_stderr(proc: subprocess.Popen) -> None:
@@ -132,10 +150,15 @@ class BtPlayer:
                 pass
 
     def _supervise(self, gen: int) -> None:
-        """Respawn ffmpeg if it dies while a URL is still wanted."""
+        """Respawn ffmpeg if it dies while this generation's URL is
+        still wanted. Every step re-checks the generation — the fatal
+        variant of this loop once spawned a second ffmpeg after a slow
+        btaudio.connect() raced a new play(), and the two instances
+        deadlocked on the exclusive PCM ('Device or resource busy')."""
         backoff = 2.0
         while True:
-            proc = self._proc
+            with self._lock:
+                proc = self._proc if self._generation == gen else None
             if proc is None:
                 return
             proc.wait()
@@ -149,5 +172,6 @@ class BtPlayer:
                 if self._generation != gen or self._url is None:
                     return
             btaudio.connect(self.mac)      # BT link may have dropped too
-            self._spawn(url)
+            if not self._spawn_if_current(url, gen):
+                return                     # superseded during connect
             backoff = min(backoff * 2, 30.0)

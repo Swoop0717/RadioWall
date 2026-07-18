@@ -662,3 +662,30 @@ def test_bt_pick_wiim_switches_linkplay_input(ui, cfg, monkeypatch):
     _wait_items(u)
     # discovery fixture lists "Wiim Amp" at 192.168.0.33 → input switched
     assert switched == [("192.168.0.33", "bluetooth")]
+
+
+def test_output_swap_closes_previous_bt_player(cfg, monkeypatch):
+    """An orphaned BtPlayer keeps the exclusive bluealsa PCM open and
+    starves its successor ('Device or resource busy')."""
+    from radiowall import btplayer
+    from radiowall.radio import RadioWorker
+    from radiowall.state import AppState
+
+    closed = []
+
+    class FakeBt:
+        def __init__(self, mac, name=""):
+            self.mac, self.name = mac, name
+
+        def close(self):
+            closed.append(self.mac)
+
+    monkeypatch.setattr(btplayer, "BtPlayer", FakeBt)
+
+    from tests.test_state import FakeRG, FakeWiim, FakePlaces
+    w = RadioWorker(AppState(), FakePlaces(), rg=FakeRG({}), wiim=FakeWiim(),
+                    use_decoder=False)
+    w.set_bt("AA:BB:CC:DD:EE:FF", "One")
+    w.set_bt("11:22:33:44:55:66", "Two")   # must close One
+    w.set_wiim("192.168.0.33")             # must close Two
+    assert closed == ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]

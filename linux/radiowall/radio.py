@@ -212,10 +212,18 @@ class RadioWorker:
         ip = wiim_ip()
         return LinkPlay(ip) if ip else None
 
+    def _close_output(self) -> None:
+        """A BtPlayer being swapped away MUST release its ffmpeg — the
+        bluealsa PCM is exclusive and an orphan blocks the successor.
+        (LinkPlay clients have no close(); nothing to release.)"""
+        close = getattr(self._wiim, "close", None)
+        if close is not None:
+            close()
+
     def set_wiim(self, ip: str) -> None:
-        """Swap to a WiiM speaker (called by the setup UI). Just an
-        attribute swap — no network here, this runs on the render
-        thread."""
+        """Swap to a WiiM speaker (called by the setup UI). Local-only
+        work — safe on the render thread."""
+        self._close_output()
         self._wiim = LinkPlay(ip)
         self._sent_volume = None
         log.info("speaker set to WiiM %s", ip)
@@ -223,6 +231,7 @@ class RadioWorker:
     def set_bt(self, mac: str, name: str = "") -> None:
         """Swap output to a Bluetooth speaker."""
         from radiowall.btplayer import BtPlayer
+        self._close_output()
         self._wiim = BtPlayer(mac, name)
         self._sent_volume = None
         log.info("speaker set to BT %s (%s)", name or mac, mac)
