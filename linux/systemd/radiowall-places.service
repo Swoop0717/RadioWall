@@ -1,0 +1,10 @@
+[Unit]
+Description=RadioWall — refresh places.bin from Radio.garden
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/radiowall.env
+WorkingDirectory=/home/orangepi/RadioWall/linux
+ExecStart=/home/orangepi/RadioWall/linux/.venv/bin/python -m radiowall.tools.refresh_places --restart-if-idle

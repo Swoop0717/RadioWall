@@ -60,6 +60,9 @@ class PlacesDB:
     def __len__(self) -> int:
         return len(self._places)
 
+    def __iter__(self):
+        return iter(self._places)
+
     @classmethod
     def load(cls, path: Path | str) -> "PlacesDB":
         data = Path(path).read_bytes()
