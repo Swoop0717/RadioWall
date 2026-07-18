@@ -43,10 +43,14 @@ PROXY_PORT = 8000
 
 # Screen 0 is the state-driven status screen; the rest are visualizers.
 VISUALIZERS = [
+    visualizer.draw_vfd,
     visualizer.draw_bars,
     visualizer.draw_mirror,
     visualizer.draw_radial,
     visualizer.draw_wave,
+    visualizer.draw_scope,
+    visualizer.draw_waterfall,
+    visualizer.draw_vu,
 ]
 NUM_SCREENS = 1 + len(VISUALIZERS)
 

@@ -7,7 +7,7 @@ See [PLAN.md](PLAN.md) for the full plan and Build Order.
 Running on the **final target hardware** since 2026-07-12: an **Orange Pi
 Zero 3W (Allwinner A733)** drives the 3.12" 256×64 **SSD1322** OLED
 (`RADIOWALL_DISPLAY=ssd1322`) with the VFD-style "now playing" mockup plus
-four audio-reactive visualizers. An HTTP proxy re-serves the chosen stream to
+eight audio-reactive visualizers. An HTTP proxy re-serves the chosen stream to
 the WiiM at `:8000/stream.mp3` while a local ffmpeg→FFT path feeds the
 visualizer. Board is at `192.168.0.5`, user `orangepi`, key SSH.
 
@@ -353,7 +353,7 @@ linux/
     ├── display/
     │   ├── factory.py   ← picks emulator / st7789 / ssd1322 by env
     │   ├── fonts.py     ← height-relative, env-tunable font sizes
-    │   ├── visualizer.py← bars / mirror / radial / wave
+    │   ├── visualizer.py← vfd / bars / mirror / radial / wave / scope / waterfall / vu
     │   └── mirror.py    ← broadcast frames to the LAN viewer
     ├── audio/
     │   ├── hub.py       ← fetch upstream stream once, fan out
