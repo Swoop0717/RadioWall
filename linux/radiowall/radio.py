@@ -97,8 +97,15 @@ class FavoriteCurrent:
     pass
 
 
+@dataclass(frozen=True)
+class ReplayCurrent:
+    """After an output swap: transfer the playing station to the new
+    speaker instead of leaving it silent with a stale PLAYING screen."""
+    pass
+
+
 Command = (PlayAt | Next | Stop | SetVolume | SetSleep | PlayEntry
-           | FavoriteCurrent)
+           | FavoriteCurrent | ReplayCurrent)
 
 
 def wiim_ip() -> str:
@@ -142,6 +149,7 @@ class RadioWorker:
         self._current_entry: history.Entry | None = None
         self._silent_check_at_s = SILENT_CHECK_AT_S
         self._silent_checked = 0.0       # played_at already evaluated
+        self._current_url: str | None = None
         self._sync_fast_s = SYNC_FAST_S  # instance attrs so tests can shrink
         self._sync_slow_s = SYNC_SLOW_S
         self._thread = threading.Thread(target=self._loop, name="radio",
@@ -221,20 +229,23 @@ class RadioWorker:
             close()
 
     def set_wiim(self, ip: str) -> None:
-        """Swap to a WiiM speaker (called by the setup UI). Local-only
-        work — safe on the render thread."""
+        """Swap to a WiiM speaker (called by the setup UI). The swap is
+        local (safe on the render thread); if a station is playing it
+        is transferred to the new speaker via the worker queue."""
         self._close_output()
         self._wiim = LinkPlay(ip)
         self._sent_volume = None
         log.info("speaker set to WiiM %s", ip)
+        self.submit(ReplayCurrent())
 
     def set_bt(self, mac: str, name: str = "") -> None:
-        """Swap output to a Bluetooth speaker."""
+        """Swap output to a Bluetooth speaker (playback transfers)."""
         from radiowall.btplayer import BtPlayer
         self._close_output()
         self._wiim = BtPlayer(mac, name)
         self._sent_volume = None
         log.info("speaker set to BT %s (%s)", name or mac, mac)
+        self.submit(ReplayCurrent())
 
     # --- worker thread ----------------------------------------------------
 
@@ -264,6 +275,8 @@ class RadioWorker:
                 self._handle_play_entry(cmd.entry)
             elif isinstance(cmd, FavoriteCurrent):
                 self._handle_favorite()
+            elif isinstance(cmd, ReplayCurrent):
+                self._handle_replay_current()
             self._flush_volume()
             self._check_sleep()
             self._check_record()
@@ -461,6 +474,7 @@ class RadioWorker:
             self._state.set_status("Failed to play")
             self._to_idle_or_playing()
             return
+        self._current_url = stream_url
         self._state.set_playing(s.place.name, country_name(s.place.country),
                                 station.title,
                                 s.playing_index + 1, len(s.stations))
@@ -538,6 +552,25 @@ class RadioWorker:
             ("★ " if starred else "unstarred ") + e.station_title)
         log.info("favorite %s: %s", "on" if starred else "off",
                  e.station_title)
+
+    def _handle_replay_current(self) -> None:
+        """Continue the playing station on a freshly swapped output.
+        No session or nothing audible -> nothing to transfer."""
+        s = self._session
+        if s is None or s.current_station() is None or self._wiim is None:
+            return
+        url = self._current_url
+        if url and self._wiim.play(url):
+            log.info("playback transferred to new speaker")
+            return
+        # resolved URLs can go stale — try once more with a fresh one
+        station = s.current_station()
+        url = self._rg.resolve_stream_url(station.id)
+        if url and self._wiim.play(url):
+            self._current_url = url
+            log.info("playback transferred (re-resolved)")
+        else:
+            self._state.set_status("Failed to play")
 
     def _check_record(self) -> None:
         if (self._pending_record is not None

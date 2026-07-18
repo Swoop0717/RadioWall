@@ -698,3 +698,45 @@ def test_output_swap_closes_previous_bt_player(cfg, monkeypatch):
     w.set_bt("11:22:33:44:55:66", "Two")   # must close One
     w.set_wiim("192.168.0.33")             # must close Two
     assert closed == ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]
+
+
+def test_output_swap_transfers_playing_station(cfg, monkeypatch):
+    """Picking a different speaker mid-play must move the music there,
+    not leave the new speaker silent under a stale PLAYING screen."""
+    import radiowall.radio as radio_mod
+    from radiowall.radio import RadioWorker, PlayAt
+    from radiowall.state import AppState, Phase
+
+    from tests.test_state import FakeRG, FakeWiim, FakePlaces, _stations
+
+    new_speaker = FakeWiim()
+
+    class FakeLP2:
+        def __init__(self, ip):
+            self.ip = ip
+
+        def play(self, url):
+            new_speaker.played.append(url)
+            return True
+
+    monkeypatch.setattr(radio_mod, "LinkPlay", FakeLP2)
+
+    rg = FakeRG({"p1": _stations(1)})
+    old_speaker = FakeWiim()
+    state = AppState()
+    w = RadioWorker(state, FakePlaces(), rg=rg, wiim=old_speaker,
+                    use_decoder=False)
+    w.start()
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        deadline = time.time() + 2.0
+        while not old_speaker.played and time.time() < deadline:
+            time.sleep(0.02)
+        w.set_wiim("192.168.0.99")         # switch output mid-play
+        deadline = time.time() + 2.0
+        while not new_speaker.played and time.time() < deadline:
+            time.sleep(0.02)
+        assert new_speaker.played == old_speaker.played  # same stream URL
+        assert state.snapshot().phase == Phase.PLAYING
+    finally:
+        w.stop()
