@@ -287,16 +287,25 @@ class SetupUI:
         self._spawn("Scanning WiFi", wifi.scan)
 
     def _load_speakers(self):
-        """Discovered speakers annotated with (is_main, grouped)."""
-        speakers = discovery.discover()
+        """Discovered speakers annotated with (is_main, grouped).
+        Grouped slaves vanish from SSDP, so the master's slave list is
+        merged in — otherwise a grouped speaker could never be shown
+        (or ungrouped) again."""
+        speakers = list(discovery.discover())
         main_ip = str(config.get("wiim_ip") or "")
-        slaves: set[str] = set()
+        slaves: list[tuple[str, str]] = []
         if main_ip:
             try:
-                slaves = set(LinkPlay(main_ip).get_slave_ips())
+                slaves = LinkPlay(main_ip).get_slaves()
             except Exception:
                 pass
-        return [(sp, sp.ip == main_ip, sp.ip in slaves) for sp in speakers]
+        slave_ips = {ip for _name, ip in slaves}
+        seen = {sp.ip for sp in speakers}
+        for name, ip in slaves:
+            if ip not in seen:
+                speakers.append(discovery.Speaker(name=name, ip=ip))
+        return [(sp, sp.ip == main_ip, sp.ip in slave_ips)
+                for sp in speakers]
 
     def _pick_speaker(self) -> None:
         with self._lock:
@@ -336,7 +345,12 @@ class SetupUI:
                 # join goes to the SLAVE, pointing it at the master
                 ok = LinkPlay(sp.ip).join_master(main_ip)
                 self._flash(f"+ {sp.name} grouped" if ok else "Failed")
-            return self._load_speakers()
+            items = self._load_speakers()
+            # a just-kicked speaker may not re-announce on SSDP for a
+            # while — keep it on screen instead of letting it vanish
+            if all(x[0].ip != sp.ip for x in items):
+                items.append((sp, False, False))
+            return items
 
         self._spawn("Updating group", task)
 

@@ -463,9 +463,12 @@ def test_speaker_screen_group_toggle(ui, cfg, monkeypatch):
         def __init__(self, ip):
             self.ip = ip
 
-        def get_slave_ips(self):
-            return ["192.168.0.63"] if any(
-                a == ("join", "192.168.0.63") for a in actions) else []
+        def get_slaves(self):
+            joined = any(a == ("join", "192.168.0.63") for a in actions)
+            kicked = any(a[0] == "kick" for a in actions)
+            if joined and not kicked:
+                return [("Esszimmer", "192.168.0.63")]
+            return []
 
         def join_master(self, master_ip):
             actions.append(("join", self.ip))
@@ -503,7 +506,7 @@ def test_speaker_pick_main_is_noop(ui, cfg, monkeypatch):
         def __init__(self, ip):
             pass
 
-        def get_slave_ips(self):
+        def get_slaves(self):
             return []
 
     monkeypatch.setattr(su, "LinkPlay", FakeLP)
@@ -514,3 +517,33 @@ def test_speaker_pick_main_is_noop(ui, cfg, monkeypatch):
     u.handle_short()                       # press on the main speaker
     assert u._screen == "SPEAKER"          # stays put, no re-set
     assert worker.wiim_ips == []
+
+
+def test_grouped_slave_hidden_from_ssdp_still_listed(ui, cfg, monkeypatch):
+    """Grouped slaves stop announcing via SSDP — the master's slave
+    list must fill the gap or they can never be ungrouped again."""
+    from radiowall.display import setup_ui as su
+
+    cfg.set("wiim_ip", "192.168.0.33")
+    # discovery only sees the master now
+    monkeypatch.setattr(su.discovery, "discover",
+                        lambda: [Speaker("Wiim Amp", "192.168.0.33")])
+
+    class FakeLP:
+        def __init__(self, ip):
+            self.ip = ip
+
+        def get_slaves(self):
+            return [("Esszimmer", "192.168.0.63")]
+
+        def kick_slave(self, ip):
+            return True
+
+    monkeypatch.setattr(su, "LinkPlay", FakeLP)
+    u, _ = ui
+    _into_setup(u)
+    u.handle_short()                       # Speaker
+    _wait_items(u)
+    with u._lock:
+        ips = [(sp.ip, grouped) for sp, _m, grouped in u._items]
+    assert ("192.168.0.63", True) in ips   # slave visible and marked

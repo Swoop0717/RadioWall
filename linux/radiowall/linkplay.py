@@ -123,16 +123,22 @@ class LinkPlay:
     # LinkPlay grouping: the JOIN command goes to the prospective SLAVE
     # (pointing it at its master); kick/ungroup/slave-list go to the MASTER.
 
-    def get_slave_ips(self) -> list[str]:
-        """IPs currently grouped under this speaker (it as master)."""
+    def get_slaves(self) -> list[tuple[str, str]]:
+        """(name, ip) of speakers grouped under this master. NOTE:
+        grouped slaves stop announcing via SSDP, so this list is the
+        ONLY way to see them — discovery alone loses them."""
         body = self._request("multiroom:getSlaveList", retries=1)
         if not body:
             return []
         try:
             data = json.loads(body)
-            return [s["ip"] for s in data.get("slave_list") or []]
+            return [(str(s.get("name") or s["ip"]), s["ip"])
+                    for s in data.get("slave_list") or []]
         except (ValueError, KeyError, TypeError):
             return []
+
+    def get_slave_ips(self) -> list[str]:
+        return [ip for _name, ip in self.get_slaves()]
 
     def join_master(self, master_ip: str) -> bool:
         """Make THIS speaker a slave of master_ip."""
