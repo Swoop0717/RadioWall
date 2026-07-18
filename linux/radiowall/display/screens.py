@@ -89,11 +89,24 @@ def needs_animation(snap: Snapshot, device, fs: fonts.FontSet) -> bool:
 
 
 def _band_geometry(device, fs: fonts.FontSet):
+    """Header/footer strips sized to the actual small-font metrics —
+    the old fixed 26%/74% fractions were tuned on the 135 px TFT and
+    ran the separator line through the header's descenders at 64 px."""
     H = device.height
-    top_sep = int(H * 0.26)
-    bot_sep = int(H * 0.74)
-    band_y = top_sep + 2 + max(0, (bot_sep - top_sep - fs.big.size) // 2)
+    asc, desc = _metrics(fs.small)
+    strip = asc + desc + 3
+    top_sep = min(H // 3, strip)
+    bot_sep = max(int(H * 0.66), H - strip)
+    b_asc, b_desc = _metrics(fs.big)
+    band_y = top_sep + max(1, (bot_sep - top_sep - (b_asc + b_desc)) // 2 + 1)
     return top_sep, bot_sep, band_y
+
+
+def _metrics(font) -> tuple[int, int]:
+    try:
+        return font.getmetrics()
+    except AttributeError:               # PIL default bitmap font
+        return (10, 2)
 
 
 def draw_status_screen(device, frame: int, fs: fonts.FontSet,
@@ -110,10 +123,12 @@ def draw_status_screen(device, frame: int, fs: fonts.FontSet,
     if snap.phase is Phase.IDLE and not snap.status_text:
         _idle(draw, W, H, fs, frame)
     else:
-        _header(draw, snap, fs, pad)
+        _header(draw, snap, fs, pad, top_sep)
+        _band(img, draw, snap, fs, band_y, W, frame)
+        # separators AFTER the band: the scroll strip is pasted with an
+        # opaque black background and would erase the bottom line
         draw.line((0, top_sep, W, top_sep), fill=AMBER_DIM)
         draw.line((0, bot_sep, W, bot_sep), fill=AMBER_DIM)
-        _band(img, draw, snap, fs, band_y, W, frame)
 
     if snap.volume_flash:
         _volume_overlay(draw, snap, fs, W, H, bot_sep)
@@ -123,13 +138,15 @@ def draw_status_screen(device, frame: int, fs: fonts.FontSet,
     device.display(img)
 
 
-def _header(draw, snap: Snapshot, fs, pad: int) -> None:
+def _header(draw, snap: Snapshot, fs, pad: int, top_sep: int) -> None:
     W = draw.im.size[0]
+    asc, desc = _metrics(fs.small)
+    y = max(0, (top_sep - (asc + desc)) // 2)   # centered above the line
     right_w = 0
     if snap.station_total:
         right = f"{snap.station_index}/{snap.station_total}"
         right_w = draw.textlength(right, font=fs.small)
-        draw.text((W - right_w - pad, pad), right, font=fs.small, fill=AMBER)
+        draw.text((W - right_w - pad, y), right, font=fs.small, fill=AMBER)
 
     left = snap.place_name or ""
     if snap.country:
@@ -138,7 +155,7 @@ def _header(draw, snap: Snapshot, fs, pad: int) -> None:
     avail = W - right_w - 3 * pad
     while left and draw.textlength(left, font=font) > avail:
         left = left[:-2].rstrip() + "…"    # long country names must not
-    draw.text((pad, pad), left, font=font, fill=AMBER)   # hit the counter
+    draw.text((pad, y), left, font=font, fill=AMBER)     # hit the counter
 
 
 def _band(img, draw, snap: Snapshot, fs, band_y: int, W: int,
