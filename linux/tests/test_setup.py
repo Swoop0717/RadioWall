@@ -280,14 +280,42 @@ def test_needs_animation():
     assert na(long_, dev, fs)                                 # scrolls
 
 
-def test_setup_sleep_menu_arms_timer(ui):
+def test_setup_sleep_dial_slow_steps_10min(ui):
+    import time as _t
+
     u, worker = ui
     worker.sleep_minutes = []
     worker.set_sleep_timer = worker.sleep_minutes.append
     u.handle_rotate(+2)                    # MENU: Sleep timer
     u.handle_short()
     assert u._screen == "SLEEP"
-    u.handle_rotate(+3)                    # 60 min
+    for _ in range(3):                     # slow detents → 10 min each
+        u.handle_rotate(+1)
+        _t.sleep(0.1)
+    u.handle_rotate(-1)                    # back down one step
+    assert u._sleep_min == 20
     u.handle_short()
-    assert worker.sleep_minutes == [60]
+    assert worker.sleep_minutes == [20]
     assert u._screen == "MENU"
+
+
+def test_setup_sleep_dial_fast_spin_accelerates(ui):
+    u, worker = ui
+    worker.sleep_minutes = []
+    worker.set_sleep_timer = worker.sleep_minutes.append
+    u.handle_rotate(+2)
+    u.handle_short()
+    for _ in range(12):                    # rapid spin, no delay between
+        u.handle_rotate(+1)
+    # first detent 10 min, the rest at the fast 30 min step
+    assert u._sleep_min == 10 + 11 * 30
+    u.handle_rotate(-100)                  # spin to zero clamps at Off
+    assert u._sleep_min == 0
+
+
+def test_setup_sleep_dial_reopens_with_armed_time(ui):
+    u, worker = ui
+    worker.sleep_minutes_left = lambda: 42
+    u.handle_rotate(+2)
+    u.handle_short()
+    assert u._sleep_min == 50              # rounded up to the 10-min grid

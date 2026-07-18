@@ -54,8 +54,14 @@ _PW_STRIP = _PW_CONTROLS + _PW_CHARS
 
 _MENU_ITEMS = ["Speaker", "WiFi", "Sleep timer", "Touch calibration",
                "Info", "Exit"]
-_SLEEP_CHOICES = [("Off", 0), ("15 min", 15), ("30 min", 30),
-                  ("60 min", 60), ("90 min", 90)]
+
+# Sleep dial: oven-timer feel. Slow turning steps 10 min per detent;
+# once detents arrive faster than _SLEEP_FAST_S apart the step grows to
+# 30 min, so 3 h is one confident spin, not 18 clicks.
+_SLEEP_STEP_MIN = 10
+_SLEEP_STEP_FAST_MIN = 30
+_SLEEP_FAST_S = 0.08
+_SLEEP_MAX_MIN = 720
 
 
 class SetupUI:
@@ -75,6 +81,8 @@ class SetupUI:
         self._pw_pos = len(_PW_CONTROLS)  # start on 'a', not on [OK]
         self._calib_stage = 0
         self._calib_first: tuple[float, float] | None = None
+        self._sleep_min = 0
+        self._sleep_last_turn = 0.0
 
     # ---------- lifecycle ------------------------------------------------
 
@@ -131,6 +139,14 @@ class SetupUI:
     def handle_rotate(self, delta: int) -> None:
         if self._screen == "PASSWORD":
             self._pw_pos = (self._pw_pos + delta) % len(_PW_STRIP)
+            return
+        if self._screen == "SLEEP":
+            now = time.monotonic()
+            fast = (now - self._sleep_last_turn) < _SLEEP_FAST_S
+            self._sleep_last_turn = now
+            step = _SLEEP_STEP_FAST_MIN if fast else _SLEEP_STEP_MIN
+            self._sleep_min = max(0, min(_SLEEP_MAX_MIN,
+                                         self._sleep_min + delta * step))
             return
         n = self._item_count()
         if n:
@@ -202,8 +218,14 @@ class SetupUI:
             self._start_scan()
         elif item == "Sleep timer":
             self._goto("SLEEP")
-            with self._lock:
-                self._items = [label for label, _m in _SLEEP_CHOICES]
+            # start from the currently armed timer so reopening the
+            # dial adjusts it instead of resetting to zero
+            left = getattr(self._worker, "sleep_minutes_left", lambda: 0)()
+            self._sleep_min = min(
+                _SLEEP_MAX_MIN,
+                (left + _SLEEP_STEP_MIN - 1)
+                // _SLEEP_STEP_MIN * _SLEEP_STEP_MIN)
+            self._sleep_last_turn = 0.0
         elif item == "Touch calibration":
             self._goto("CALIB")
             self._calib_stage = 0
@@ -245,15 +267,20 @@ class SetupUI:
             self._goto("PASSWORD")
 
     def _pick_sleep(self) -> None:
-        if not (0 <= self._cursor < len(_SLEEP_CHOICES)):
-            return
-        label, minutes = _SLEEP_CHOICES[self._cursor]
+        minutes = self._sleep_min
         set_timer = getattr(self._worker, "set_sleep_timer", None)
         if set_timer is not None:
             set_timer(minutes)
         self._flash("Sleep timer off" if minutes == 0
-                    else f"Sleep in {label}")
+                    else f"Sleep in {self._fmt_min(minutes)}")
         self._goto("MENU")
+
+    @staticmethod
+    def _fmt_min(minutes: int) -> str:
+        if minutes >= 60:
+            h, m = divmod(minutes, 60)
+            return f"{h}h {m:02d}m" if m else f"{h}h"
+        return f"{minutes} min"
 
     def _pw_key(self) -> None:
         key = _PW_STRIP[self._pw_pos]
@@ -308,9 +335,7 @@ class SetupUI:
                 self._draw_list(d, device, fs, rows, self._cursor,
                                 empty="No networks found")
             elif self._screen == "SLEEP":
-                with self._lock:
-                    rows = list(self._items)
-                self._draw_list(d, device, fs, rows, self._cursor)
+                self._draw_sleep_dial(d, device, fs)
             elif self._screen == "WIFI_RESULT":
                 with self._lock:
                     result = self._items[0] if self._items else None
@@ -335,6 +360,7 @@ class SetupUI:
         hint = {
             "MENU": "turn·pick  press·ok  hold·exit",
             "PASSWORD": "press·type  2x·del  hold·back",
+            "SLEEP": "turn·time  press·set  hold·back",
         }.get(self._screen, "hold·back")
         hw = d.textlength(hint, font=fs.tiny)
         d.text((W - hw - 2, 0), hint, font=fs.tiny, fill=AMBER_GHOST)
@@ -417,6 +443,21 @@ class SetupUI:
             d.text((x - w, y + 3), label, font=fs.small, fill=AMBER_GHOST)
             x -= w + gap
             off += 1
+
+    def _draw_sleep_dial(self, d, device, fs) -> None:
+        W, H = device.width, device.height
+        big = "Off" if self._sleep_min == 0 else self._fmt_min(self._sleep_min)
+        w = d.textlength(big, font=fs.big)
+        d.text(((W - w) // 2, 16), big, font=fs.big,
+               fill=AMBER_BRIGHT if self._sleep_min else AMBER_DIM)
+        if self._sleep_min:
+            ends = time.strftime(
+                "%H:%M", time.localtime(time.time() + self._sleep_min * 60))
+            sub = f"music off at {ends}"
+        else:
+            sub = "turn to set a timer"
+        sw = d.textlength(sub, font=fs.tiny)
+        d.text(((W - sw) // 2, H - 13), sub, font=fs.tiny, fill=AMBER_DIM)
 
     def _draw_calib(self, d, device, fs, frame: int) -> None:
         if self._calib_stage == 0:

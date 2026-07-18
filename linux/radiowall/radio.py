@@ -148,6 +148,14 @@ class RadioWorker:
         """Arm (or cancel with 0) the sleep timer — setup-UI entry point."""
         self.submit(SetSleep(minutes))
 
+    def sleep_minutes_left(self) -> int:
+        """Minutes until the armed sleep timer fires (0 = not armed)."""
+        deadline = self._sleep_deadline
+        if deadline is None:
+            return 0
+        left = deadline - time.monotonic()
+        return int(left // 60) + 1 if left > 0 else 0
+
     def set_wiim(self, ip: str) -> None:
         """Swap the speaker (called by the setup UI after discovery).
         Just an attribute swap — no network here, this runs on the
