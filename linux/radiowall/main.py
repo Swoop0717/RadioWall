@@ -198,6 +198,10 @@ def main() -> int:
             if b_event and not setup.active:
                 screen = 0
 
+            # ICY now-playing from the decoder tap (event-driven — ""
+            # for stations that send none; set_track no-ops if unchanged)
+            state.set_track(decoder.get_stream_title())
+
             if setup.active:
                 setup.draw(device, frame, fs)
                 was_in_setup = True

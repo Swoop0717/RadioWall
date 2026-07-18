@@ -48,6 +48,7 @@ class Snapshot:
     status_text: str = ""         # transient; "" = none (expiry pre-applied)
     volume_flash: bool = False    # show the volume overlay this frame
     sleep_min_left: int = 0       # armed sleep timer, minutes left (0 = off)
+    track_title: str = ""         # ICY now-playing ("" = station sends none)
 
 
 class AppState:
@@ -73,7 +74,8 @@ class AppState:
             self._snap = replace(self._snap, phase=Phase.PLAYING,
                                  place_name=place_name, country=country,
                                  station_title=station_title,
-                                 station_index=index, station_total=total)
+                                 station_index=index, station_total=total,
+                                 track_title="")
             self._status_until = 0.0
 
     def set_idle(self) -> None:
@@ -96,6 +98,13 @@ class AppState:
         """Arm/disarm the sleep-timer countdown (monotonic deadline)."""
         with self._lock:
             self._sleep_deadline = deadline
+
+    def set_track(self, title: str) -> None:
+        """ICY now-playing title (fed from the decoder by the render
+        loop; no-op unless it changed)."""
+        with self._lock:
+            if self._snap.track_title != title:
+                self._snap = replace(self._snap, track_title=title)
 
     # --- UI-side helpers ------------------------------------------------
 

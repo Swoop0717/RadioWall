@@ -30,6 +30,7 @@ import collections
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -40,6 +41,8 @@ try:
     import numpy as np
 except ImportError:
     np = None  # type: ignore
+
+import requests
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +73,18 @@ ATTACK = 0.55
 RELEASE = 0.20
 
 WAVE_POINTS = 64                  # scope waveform points stored per hop
+
+# ICY metadata ("StreamTitle") sources, best-effort and event-driven:
+#  1. A dedicated reader connection with "Icy-MetaData: 1". The server
+#     answers with icy-metaint (or doesn't — then the station sends no
+#     titles and the reader closes IMMEDIATELY, that's the capability
+#     check) and pushes title updates in-band between audio blocks.
+#  2. ffmpeg's stderr line "Metadata update for StreamTitle: …" — only
+#     emitted by ffmpeg ≥5 (Jammy ships 4.4, hence source 1), kept as
+#     a freebie for newer platforms. Duplicates are dropped.
+_META_RE = re.compile(r"Metadata update for StreamTitle:\s*(.*)")
+_ICY_TITLE_RE = re.compile(rb"StreamTitle='(.*?)';")
+_MAX_TITLES = 8                   # pending title changes kept for replay
 
 # The WiiM buffers seconds of stream before you HEAR it, while our own
 # ffmpeg tap reacts almost live — so the raw visualizer dances ahead of
@@ -121,6 +136,9 @@ class _Decoder:
         self._t0: Optional[float] = None      # wall time of first band frame
         self._frames_total = 0                # appended ever (incl. evicted)
         self._sync: Optional[tuple[float, float]] = None  # (pos_s, measured_at)
+        self._titles: list[tuple[int, str]] = []  # (frame idx heard, title)
+        self._last_title: Optional[str] = None
+        self._icy_resp: Optional[requests.Response] = None
         self._lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
@@ -139,12 +157,17 @@ class _Decoder:
         self._reader_thread = threading.Thread(
             target=self._supervise, name="decoder", daemon=True)
         self._reader_thread.start()
+        threading.Thread(target=self._icy_loop, name="icy-titles",
+                         daemon=True).start()
         log.info("decoder started on %s", self._url)
 
     def _spawn(self) -> None:
         self._proc = subprocess.Popen(
             [
-                "ffmpeg", "-loglevel", "warning", "-nostdin",
+                # loglevel info (not warning): that's where ffmpeg
+                # announces ICY StreamTitle updates. -nostats kills the
+                # per-second progress spam that comes with it.
+                "ffmpeg", "-loglevel", "info", "-nostats", "-nostdin",
                 # Some stations 404/close ffmpeg's default UA while serving
                 # real players fine (the WiiM plays where our tap dies).
                 "-user_agent", "VLC/3.0.20 LibVLC/3.0.20",
@@ -197,6 +220,11 @@ class _Decoder:
         if self._proc and self._proc.poll() is None:
             try:
                 self._proc.kill()
+            except Exception:
+                pass
+        if self._icy_resp is not None:
+            try:
+                self._icy_resp.close()     # unblock the reader thread
             except Exception:
                 pass
 
@@ -267,13 +295,128 @@ class _Decoder:
     # -------- PCM → frames ---------------------------------------------
 
     def _drain_stderr(self) -> None:
-        """Read stderr line-by-line and log it; prevents the 64 KB
-        kernel pipe buffer from filling up and blocking ffmpeg."""
+        """Read stderr line-by-line: harvest StreamTitle updates, log
+        the rest; prevents the 64 KB kernel pipe buffer from filling
+        up and blocking ffmpeg."""
         assert self._proc is not None and self._proc.stderr is not None
         for raw in iter(self._proc.stderr.readline, b""):
             line = raw.decode("utf-8", errors="replace").rstrip()
-            if line:
+            if not line:
+                continue
+            if self._ingest_stderr_line(line):
+                continue
+            # loglevel info includes the multi-line input dump at
+            # connect — keep the journal readable
+            if line.startswith((" ", "Input #", "Output #", "Stream m")):
+                log.debug("ffmpeg: %s", line)
+            else:
                 log.info("ffmpeg: %s", line)
+
+    def _ingest_stderr_line(self, line: str) -> bool:
+        """True if the line was an ICY StreamTitle update (ffmpeg ≥5)."""
+        m = _META_RE.search(line)
+        if m is None:
+            return False
+        self._note_title(m.group(1).strip())
+        return True
+
+    def _note_title(self, title: str) -> None:
+        """Record a StreamTitle change, stamped with the CURRENT decode
+        position so get_stream_title() reveals it when that audio
+        becomes audible — ICY changes reach our tap many seconds before
+        the WiiM plays them. Duplicate-safe (two sources may report the
+        same change)."""
+        if title == self._last_title:
+            return
+        self._last_title = title
+        with self._lock:
+            # stamp on the last appended frame: the change belongs to
+            # the audio being decoded right now, and a live consumption
+            # clock sits on frames_total - 1
+            self._titles.append((max(0, self._frames_total - 1), title))
+            del self._titles[:-_MAX_TITLES]
+        log.info("stream title: %s", title or "(blank)")
+
+    # -------- ICY title reader ------------------------------------------
+
+    def _icy_loop(self) -> None:
+        """Dedicated metadata connection. One request decides support:
+        no icy-metaint header → the station sends no titles, close and
+        never come back (the capability check). With metaint, titles
+        arrive pushed in-band; ~16 KB/s of audio is read and discarded."""
+        backoff = 2.0
+        while not self._stop.is_set():
+            try:
+                resp = requests.get(
+                    self._url, stream=True, timeout=(10, 30),
+                    headers={"Icy-MetaData": "1",
+                             "User-Agent": "VLC/3.0.20 LibVLC/3.0.20"})
+                self._icy_resp = resp
+                try:
+                    metaint = int(resp.headers.get("icy-metaint", 0))
+                except ValueError:
+                    metaint = 0
+                if metaint <= 0:
+                    log.info("station sends no ICY titles (no metaint)")
+                    resp.close()
+                    return
+                log.info("ICY titles available (metaint=%d)", metaint)
+                backoff = 2.0
+                self._icy_consume(resp.raw, metaint)
+                resp.close()
+            except requests.RequestException as e:
+                log.info("icy reader: %s", e)
+            if self._stop.wait(backoff):
+                return
+            backoff = min(backoff * 2, 60.0)
+
+    def _icy_consume(self, raw, metaint: int) -> None:
+        """Read metaint-framed blocks until EOF/stop; feed titles."""
+        def read_exact(n: int) -> bytes:
+            chunks = []
+            while n > 0 and not self._stop.is_set():
+                data = raw.read(min(n, 8192))
+                if not data:
+                    return b""
+                chunks.append(data)
+                n -= len(data)
+            return b"".join(chunks)
+
+        while not self._stop.is_set():
+            if not read_exact(metaint):        # audio bytes, discarded
+                return
+            head = read_exact(1)
+            if not head:
+                return
+            mlen = head[0] * 16
+            if mlen == 0:
+                continue
+            block = read_exact(mlen)
+            if not block:
+                return
+            m = _ICY_TITLE_RE.search(block)
+            if m is not None:
+                title_bytes = m.group(1)
+                try:
+                    title = title_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    title = title_bytes.decode("latin-1", errors="replace")
+                self._note_title(title.strip())
+
+    def get_stream_title(self) -> str:
+        """Title of the track that is audible NOW ('' when unknown)."""
+        with self._lock:
+            if not self._titles:
+                return ""
+            i = self._index()
+            if i is None:
+                return ""
+            audible_abs = (self._frames_total - len(self._history)) + i
+            best = ""
+            for idx, title in self._titles:
+                if idx <= audible_abs:
+                    best = title
+            return best
 
     def _build_dsp(self):
         window = np.hanning(FFT_SIZE).astype(np.float32)
@@ -404,3 +547,11 @@ def sync_playback(pos_s: float, measured_at: float) -> None:
     the decoder isn't running."""
     if _singleton is not None:
         _singleton.sync_playback(pos_s, measured_at)
+
+
+def get_stream_title() -> str:
+    """ICY title of the audibly-playing track; '' when the station
+    sends none (or nothing is decoding)."""
+    if _singleton is None:
+        return ""
+    return _singleton.get_stream_title()

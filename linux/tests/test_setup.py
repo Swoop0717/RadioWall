@@ -367,3 +367,19 @@ def test_menu_history_play_and_star(ui, monkeypatch):
     u.handle_double()                      # unstar from favorites view
     assert history.entries(favorites_only=True) == []
     history.reset_cache_for_tests()
+
+
+# --- band text (ICY track titles) ---------------------------------------------
+
+def test_band_text_combines_station_and_track():
+    from radiowall.display.screens import band_text
+    from radiowall.state import Phase, Snapshot
+
+    plain = Snapshot(phase=Phase.PLAYING, station_title="FM4")
+    assert band_text(plain) == "FM4"         # no track → unchanged layout
+    with_track = Snapshot(phase=Phase.PLAYING, station_title="FM4",
+                          track_title="Kraftwerk - Autobahn")
+    assert band_text(with_track) == "FM4  ·  Kraftwerk - Autobahn"
+    echo = Snapshot(phase=Phase.PLAYING, station_title="FM4",
+                    track_title="fm4")       # station name echoed back
+    assert band_text(echo) == "FM4"

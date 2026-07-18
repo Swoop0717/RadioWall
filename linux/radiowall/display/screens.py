@@ -66,6 +66,18 @@ def scroll_text(img: Image.Image, draw, text: str, font, y: int, width: int,
     img.paste(window, (0, y))
 
 
+def band_text(snap: Snapshot) -> str:
+    """What the big scrolling band shows while playing: the station
+    name, extended with the ICY track title when the station sends one
+    (and it isn't just the station name repeated). No track → exactly
+    the old layout."""
+    title = snap.station_title
+    track = snap.track_title.strip()
+    if track and track.lower() != title.lower():
+        return f"{title}  ·  {track}"
+    return title
+
+
 def needs_animation(snap: Snapshot, device, fs: fonts.FontSet) -> bool:
     """True when the status screen has per-frame motion right now
     (scrolling text, loading dots, volume flash). When False the main
@@ -78,7 +90,7 @@ def needs_animation(snap: Snapshot, device, fs: fonts.FontSet) -> bool:
     if snap.status_text:
         text, font = snap.status_text, fs.big
     elif snap.phase is Phase.PLAYING and snap.station_title:
-        text = snap.station_title
+        text = band_text(snap)
         font = fs.pick_big(text)
     else:
         return False
@@ -166,7 +178,7 @@ def _band(img, draw, snap: Snapshot, fs, band_y: int, W: int,
         dots = "." * (1 + (frame // 12) % 3)
         scroll_text(img, draw, f"Tuning{dots}", fs.big, band_y, W, frame=0)
     else:
-        title = snap.station_title
+        title = band_text(snap)
         scroll_text(img, draw, title, fs.pick_big(title), band_y, W, frame)
 
 

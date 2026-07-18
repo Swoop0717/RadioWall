@@ -115,3 +115,65 @@ def test_all_bands_have_fft_bins():
     d._dsp = d._build_dsp()
     _window, masks, _buf = d._dsp
     assert all(m.any() for m in masks)
+
+
+def test_stream_title_parsed_and_revealed_live():
+    d = _Decoder("test")
+    _feed(d, [(440, 0.5)], chunks=10)
+    assert d._ingest_stderr_line(
+        "[https @ 0x55] Metadata update for StreamTitle: Artist - Song") \
+        is True
+    assert d._ingest_stderr_line("random ffmpeg noise") is False
+    # live path (no sync, VIS_DELAY 0): visible immediately
+    assert d.get_stream_title() == "Artist - Song"
+
+
+def test_stream_title_waits_for_consumption_clock():
+    import time as _time
+    d = _Decoder("test")
+    _feed(d, [(440, 0.5)], chunks=100)       # ~2.3 s decoded
+    # title arrived at decode position ~2.3 s (frame 100)
+    d._ingest_stderr_line("Metadata update for StreamTitle: New Song")
+    now = _time.monotonic()
+    d.sync_playback(0.5, now)                # speaker only at 0.5 s
+    assert d.get_stream_title() == ""        # not audible yet
+    d.sync_playback(2.4, now)                # speaker caught up
+    assert d.get_stream_title() == "New Song"
+
+
+def test_stream_title_keeps_latest_audible_of_many():
+    d = _Decoder("test")
+    _feed(d, [(440, 0.5)], chunks=5)
+    d._ingest_stderr_line("Metadata update for StreamTitle: One")
+    _feed(d, [(440, 0.5)], chunks=5)
+    d._ingest_stderr_line("Metadata update for StreamTitle: Two")
+    assert d.get_stream_title() == "Two"     # live: newest audible wins
+
+
+def test_icy_consume_parses_titles_from_metaint_stream():
+    import io
+
+    def meta_block(text):
+        payload = f"StreamTitle='{text}';".encode()
+        k = (len(payload) + 15) // 16
+        return bytes([k]) + payload.ljust(k * 16, b"\x00")
+
+    metaint = 32
+    stream = (b"A" * metaint + meta_block("Song One")
+              + b"B" * metaint + bytes([0])          # empty metadata block
+              + b"C" * metaint + meta_block("Song Two"))
+
+    d = _Decoder("test")
+    _feed(d, [(440, 0.5)], chunks=2)
+    d._icy_consume(io.BytesIO(stream), metaint)
+    assert d.get_stream_title() == "Song Two"
+    titles = [t for _i, t in d._titles]
+    assert titles == ["Song One", "Song Two"]
+
+
+def test_icy_duplicate_titles_dropped():
+    d = _Decoder("test")
+    _feed(d, [(440, 0.5)], chunks=2)
+    d._note_title("Same Song")
+    d._note_title("Same Song")               # e.g. stderr echo of source 1
+    assert len(d._titles) == 1
