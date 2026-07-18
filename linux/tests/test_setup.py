@@ -180,9 +180,16 @@ def _wait_items(u, timeout=2.0):
     raise AssertionError("setup task did not deliver items")
 
 
+def _into_setup(u):
+    """Root menu → Setup submenu (Setup sits at index 4)."""
+    u.handle_rotate(+4)
+    u.handle_short()
+
+
 def test_setup_speaker_pick_saves_and_applies(ui, cfg):
     u, worker = ui
-    u.handle_short()                       # MENU: Speaker (cursor 0)
+    _into_setup(u)
+    u.handle_short()                       # SETUP: Speaker (cursor 0)
     _wait_items(u)
     u.handle_rotate(+1)                    # second speaker
     u.handle_short()
@@ -194,7 +201,8 @@ def test_setup_speaker_pick_saves_and_applies(ui, cfg):
 
 def test_setup_wifi_password_entry_flow(ui, cfg):
     u, _ = ui
-    u.handle_rotate(+1)                    # MENU → WiFi
+    _into_setup(u)
+    u.handle_rotate(+1)                    # SETUP → WiFi
     u.handle_short()
     _wait_items(u)
     u.handle_rotate(+1)                    # NewNet (unknown, secured)
@@ -218,6 +226,7 @@ def test_setup_wifi_password_entry_flow(ui, cfg):
 
 def test_setup_known_network_connects_without_password(ui):
     u, _ = ui
+    _into_setup(u)
     u.handle_rotate(+1)
     u.handle_short()                       # WiFi
     _wait_items(u)
@@ -230,7 +239,8 @@ def test_setup_known_network_connects_without_password(ui):
 
 def test_setup_calibration_two_taps(ui, cfg):
     u, _ = ui
-    u.handle_rotate(+3)                    # Touch calibration
+    _into_setup(u)
+    u.handle_rotate(+2)                    # Touch calibration
     u.handle_short()
     assert u._screen == "CALIB"
     u.handle_tap(0.91, 0.88)               # corners in either order
@@ -241,7 +251,8 @@ def test_setup_calibration_two_taps(ui, cfg):
 
 def test_setup_calibration_rejects_degenerate_rect(ui, cfg):
     u, _ = ui
-    u.handle_rotate(+3)
+    _into_setup(u)
+    u.handle_rotate(+2)
     u.handle_short()
     u.handle_tap(0.5, 0.5)
     u.handle_tap(0.52, 0.9)                # x too close → restart
@@ -249,12 +260,15 @@ def test_setup_calibration_rejects_degenerate_rect(ui, cfg):
     assert u._calib_stage == 0
 
 
-def test_setup_long_press_backs_out_and_exits(ui):
+def test_setup_long_press_backs_out_level_by_level(ui):
     u, _ = ui
+    _into_setup(u)
     u.handle_short()                       # into Speaker
-    u.handle_long()                        # back to menu
+    u.handle_long()                        # back to Setup submenu
+    assert u._screen == "SETUP_MENU" and u.active
+    u.handle_long()                        # back to root menu
     assert u._screen == "MENU" and u.active
-    u.handle_long()                        # exit
+    u.handle_long()                        # close
     assert not u.active
 
 
@@ -286,7 +300,7 @@ def test_setup_sleep_dial_slow_steps_10min(ui):
     u, worker = ui
     worker.sleep_minutes = []
     worker.set_sleep_timer = worker.sleep_minutes.append
-    u.handle_rotate(+2)                    # MENU: Sleep timer
+    u.handle_rotate(+1)                    # MENU: Sleep timer
     u.handle_short()
     assert u._screen == "SLEEP"
     for _ in range(3):                     # slow detents → 10 min each
@@ -303,7 +317,7 @@ def test_setup_sleep_dial_fast_spin_accelerates(ui):
     u, worker = ui
     worker.sleep_minutes = []
     worker.set_sleep_timer = worker.sleep_minutes.append
-    u.handle_rotate(+2)
+    u.handle_rotate(+1)
     u.handle_short()
     for _ in range(12):                    # rapid spin, no delay between
         u.handle_rotate(+1)
@@ -316,6 +330,52 @@ def test_setup_sleep_dial_fast_spin_accelerates(ui):
 def test_setup_sleep_dial_reopens_with_armed_time(ui):
     u, worker = ui
     worker.sleep_minutes_left = lambda: 42
-    u.handle_rotate(+2)
+    u.handle_rotate(+1)
     u.handle_short()
     assert u._sleep_min == 50              # rounded up to the 10-min grid
+
+
+# --- history / favorites in the menu ------------------------------------------
+
+def test_menu_stop_item_stops_and_closes(ui):
+    u, worker = ui
+    worker.stops = []
+    worker.stop_playback = lambda: worker.stops.append(1)
+    u.handle_short()                       # root cursor 0 = Stop
+    assert worker.stops == [1]
+    assert not u.active
+
+
+def test_menu_history_play_and_star(ui, monkeypatch):
+    from radiowall import history
+    from radiowall.history import Entry
+
+    history.reset_cache_for_tests()
+    history.add(Entry(station_id="s1", station_title="Radio Wien",
+                      place_id="p1", place_name="Vienna", country="AT",
+                      lat=48.2, lon=16.4))
+    history.add(Entry(station_id="s2", station_title="FM4",
+                      place_id="p1", place_name="Vienna", country="AT",
+                      lat=48.2, lon=16.4))
+
+    u, worker = ui
+    worker.played_entries = []
+    worker.play_history = worker.played_entries.append
+
+    u.handle_rotate(+2)                    # History
+    u.handle_short()
+    assert u._screen == "HISTORY"
+    u.handle_rotate(+1)                    # older entry: Radio Wien
+    u.handle_double()                      # star it
+    assert history.entries(favorites_only=True)[0].station_id == "s1"
+    u.handle_short()                       # play it
+    assert worker.played_entries[0].station_id == "s1"
+    assert not u.active                    # menu closed to show playback
+
+    u.open()
+    u.handle_rotate(+3)                    # Favorites
+    u.handle_short()
+    assert u._screen == "FAVORITES"
+    u.handle_double()                      # unstar from favorites view
+    assert history.entries(favorites_only=True) == []
+    history.reset_cache_for_tests()

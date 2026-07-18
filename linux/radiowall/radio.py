@@ -27,10 +27,11 @@ import threading
 import time
 from dataclasses import dataclass
 
+from radiowall import history
 from radiowall.audio import decoder
 from radiowall.linkplay import LinkPlay
-from radiowall.places_db import PlacesDB, country_name
-from radiowall.radio_garden import RadioGarden
+from radiowall.places_db import Place, PlacesDB, country_name
+from radiowall.radio_garden import RadioGarden, Station
 from radiowall.state import AppState, Session
 
 log = logging.getLogger(__name__)
@@ -73,7 +74,15 @@ class SetSleep:
     minutes: int          # 0 = cancel
 
 
-Command = PlayAt | Next | Stop | SetVolume | SetSleep
+@dataclass(frozen=True)
+class PlayEntry:
+    """Replay a history/favorites entry. Re-resolves the stream via
+    Radio.garden; a full Session is rebuilt from the stored place so
+    NEXT keeps its city-hop semantics after a replay."""
+    entry: history.Entry
+
+
+Command = PlayAt | Next | Stop | SetVolume | SetSleep | PlayEntry
 
 
 def wiim_ip() -> str:
@@ -112,6 +121,9 @@ class RadioWorker:
         self._played_at = 0.0            # monotonic time of last play cmd
         self._sync_logged = False        # one "synced" log line per station
         self._sleep_deadline: float | None = None
+        self._record_after_s = history.RECORD_AFTER_S
+        self._pending_record: history.Entry | None = None
+        self._record_at = 0.0
         self._sync_fast_s = SYNC_FAST_S  # instance attrs so tests can shrink
         self._sync_slow_s = SYNC_SLOW_S
         self._thread = threading.Thread(target=self._loop, name="radio",
@@ -145,8 +157,16 @@ class RadioWorker:
         self._queue.put(cmd)
 
     def set_sleep_timer(self, minutes: int) -> None:
-        """Arm (or cancel with 0) the sleep timer — setup-UI entry point."""
+        """Arm (or cancel with 0) the sleep timer — menu entry point."""
         self.submit(SetSleep(minutes))
+
+    def stop_playback(self) -> None:
+        """Menu 'Stop' entry point."""
+        self.submit(Stop())
+
+    def play_history(self, entry: history.Entry) -> None:
+        """Menu History/Favorites entry point."""
+        self.submit(PlayEntry(entry))
 
     def sleep_minutes_left(self) -> int:
         """Minutes until the armed sleep timer fires (0 = not armed)."""
@@ -174,6 +194,7 @@ class RadioWorker:
             except queue.Empty:
                 self._flush_volume()
                 self._check_sleep()
+                self._check_record()
                 continue
             if not self._running:
                 break
@@ -186,8 +207,11 @@ class RadioWorker:
                 self._handle_stop()
             elif isinstance(cmd, SetSleep):
                 self._handle_sleep(cmd.minutes)
+            elif isinstance(cmd, PlayEntry):
+                self._handle_play_entry(cmd.entry)
             self._flush_volume()
             self._check_sleep()
+            self._check_record()
 
     def _sync_loop(self) -> None:
         """Poll the WiiM's playback position and hand it to the decoder,
@@ -362,6 +386,13 @@ class RadioWorker:
             decoder.start(stream_url)
         self._played_at = time.monotonic()
         self._sync_logged = False
+        # history: record only stations that survive the skip window
+        self._pending_record = history.Entry(
+            station_id=station.id, station_title=station.title,
+            place_id=s.place.id, place_name=s.place.name,
+            country=s.place.country,
+            lat=s.place.lat100 / 100.0, lon=s.place.lon100 / 100.0)
+        self._record_at = self._played_at + self._record_after_s
 
     def _handle_sleep(self, minutes: int) -> None:
         """Arm/cancel the sleep timer. Belt and braces: the WiiM gets its
@@ -395,12 +426,31 @@ class RadioWorker:
             self._handle_stop()
             self._state.set_status("Good night", ttl_s=10.0)
 
+    def _handle_play_entry(self, entry: history.Entry) -> None:
+        """Replay from history: rebuild a real Session anchored at the
+        stored place so NEXT hops cities exactly like after a touch."""
+        place = Place(id=entry.place_id,
+                      lat100=int(entry.lat * 100),
+                      lon100=int(entry.lon * 100),
+                      name=entry.place_name, country=entry.country)
+        station = Station(id=entry.station_id, title=entry.station_title)
+        self._session = Session(origin_lat=entry.lat, origin_lon=entry.lon,
+                                place=place, stations=[station])
+        self._play_next_in_session()
+
+    def _check_record(self) -> None:
+        if (self._pending_record is not None
+                and time.monotonic() >= self._record_at):
+            history.add(self._pending_record)
+            self._pending_record = None
+
     def _handle_stop(self) -> None:
         if self._use_decoder:
             decoder.stop()
         if self._wiim is not None:
             self._wiim.stop()
         self._session = None
+        self._pending_record = None
         self._state.set_idle()
         log.info("stopped")
 

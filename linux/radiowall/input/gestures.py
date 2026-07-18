@@ -4,14 +4,15 @@ VERY_LONG press.
 Pure timing logic over debounced press edges — no hardware, fully
 unit-testable with synthetic timestamps.
 
-Semantics (one-encoder car-radio mapping):
+Semantics (one-encoder, "the longer you hold, the more drastic"):
 
-- LONG   fires AT the 800 ms mark *while still held* — STOP is the panic
-         gesture and must not wait for release. The following release is
+- LONG   fires AT the 800 ms mark *while still held* — opens the menu
+         without waiting for release. The following release is
          swallowed.
-- VERY_LONG fires at the 3 s mark while still held (the setup-menu
-         gesture). LONG has necessarily fired at 800 ms on the way —
-         callers treat "stop, then setup opens" as the expected ride.
+- VERY_LONG fires at the 3 s mark while still held — stop everything.
+         LONG has necessarily fired at 800 ms on the way, so the menu
+         visibly opens mid-hold and closes again when the stop lands;
+         callers treat that as the expected ride.
 - DOUBLE fires on the second press-down within 300 ms of the first
          release (the second release is swallowed).
 - SHORT  fires 300 ms after a release, once a DOUBLE can no longer

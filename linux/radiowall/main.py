@@ -1,11 +1,11 @@
 """Entry point — RadioWall: touch the map, hear that city's radio.
 
-Inputs: IR touch frame (tap → play nearest city), one rotary encoder
-(rotate = volume; short press = next station; long press = stop;
-hold ≥3 s = setup menu; double press = cycle now-playing ↔ visualizer
-screens), plus the dev HAT's two buttons (A = cycle screens, B = home)
-where present. While setup is open the encoder and touch input belong
-to the setup UI.
+Inputs: IR touch frame (tap → play nearest city), one rotary encoder.
+The longer you hold, the more drastic: tap = next station, double-tap
+= cycle now-playing ↔ visualizer screens, hold ~0.8 s = menu (music
+keeps playing; Stop/Sleep/History/Favorites/Setup), keep holding to
+~3 s = stop everything. Rotate = volume, or navigation while the menu
+is open. Dev HAT buttons (A = cycle screens, B = home) where present.
 
 All network I/O runs on the RadioWorker thread; this loop only polls
 inputs at ~50 Hz and renders from a state snapshot.
@@ -168,7 +168,13 @@ def main() -> int:
 
             for g in gestures.update(encoder.poll_events(), now):
                 log.info("gesture: %s", g.name)
-                if setup.active:
+                if g is Gesture.VERY_LONG:
+                    # held all the way through: stop everything,
+                    # whether the menu opened along the way or not
+                    worker.submit(Stop())
+                    if setup.active:
+                        setup.close()
+                elif setup.active:
                     if g is Gesture.SHORT:
                         setup.handle_short()
                     elif g is Gesture.LONG:
@@ -178,13 +184,9 @@ def main() -> int:
                 elif g is Gesture.SHORT:
                     worker.submit(Next())
                 elif g is Gesture.LONG:
-                    worker.submit(Stop())
+                    setup.open()           # menu; music keeps playing
                 elif g is Gesture.DOUBLE:
                     screen = (screen + 1) % NUM_SCREENS
-                elif g is Gesture.VERY_LONG:
-                    setup.open()
-                    # reload calibration when setup closes (wizard may
-                    # have rewritten it) — cheap enough to do every exit
 
             a_event, b_event = buttons.poll()
             if a_event and not setup.active:

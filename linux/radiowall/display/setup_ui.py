@@ -1,20 +1,27 @@
-"""On-device setup UI — everything configurable without a phone.
+"""On-device menu — player controls AND setup, no phone needed.
 
-Entered by holding the encoder ≥3 s (Gesture.VERY_LONG). One knob
-drives everything: rotate = move / pick character, short press =
-select, long press = back (at the root: exit).
+Entered by holding the encoder ~0.8 s (Gesture.LONG); music keeps
+playing underneath. One knob drives everything: rotate = move / pick,
+short press = select, long press = back (at the root: close). Holding
+on to ~3 s (VERY_LONG) stops playback from anywhere.
 
 Screens:
-  MENU     Speaker · WiFi · Touch calibration · Info · Exit
-  SPEAKER  SSDP-discover LinkPlay devices, pick one → config['wiim_ip']
-  WIFI     nmcli scan, pick an SSID (known ones connect directly)
-  PASSWORD rotary character entry for WiFi passwords
-  CALIB    tap top-left then bottom-right map corner → config['touch_calib']
-  INFO     SSID, IP, configured speaker
+  MENU       Stop · Sleep timer · History · Favorites · Setup · Exit
+  HISTORY    recently played stations; press = replay, 2x = star
+  FAVORITES  starred history entries
+  SLEEP      oven-style dial, 10/30-min steps
+  SETUP_MENU Speaker · WiFi · Touch calibration · Info
+  SPEAKER    SSDP-discover LinkPlay devices, pick → config['wiim_ip']
+  WIFI       nmcli scan, pick an SSID (known ones connect directly)
+  PASSWORD   rotary character entry for WiFi passwords
+  CALIB      tap top-left then bottom-right corner → config['touch_calib']
+  INFO       SSID, IP, configured speaker
 
 All network work (discovery, scan, connect) runs on daemon threads;
 the UI thread only reads the result slots. A generation counter makes
-stale thread results harmless (user backed out and reopened).
+stale thread results harmless (user backed out and reopened). The
+menu closes itself after 30 s without input — it sits over a playing
+radio and must never strand the volume knob.
 
 The class is UI-state only — display drawing happens in draw(), input
 in handle_*(); both are called from the main loop. No hardware
@@ -29,7 +36,7 @@ import time
 
 from luma.core.render import canvas
 
-from radiowall import config, discovery, wifi
+from radiowall import config, discovery, history, wifi
 from radiowall.display import fonts
 
 log = logging.getLogger(__name__)
@@ -52,8 +59,20 @@ _PW_CHARS = (
 )
 _PW_STRIP = _PW_CONTROLS + _PW_CHARS
 
-_MENU_ITEMS = ["Speaker", "WiFi", "Sleep timer", "Touch calibration",
-               "Info", "Exit"]
+_MENU_ITEMS = ["Stop", "Sleep timer", "History", "Favorites",
+               "Setup", "Exit"]
+_SETUP_ITEMS = ["Speaker", "WiFi", "Touch calibration", "Info"]
+
+# hold = back one level; at MENU it closes
+_PARENT = {
+    "SLEEP": "MENU", "HISTORY": "MENU", "FAVORITES": "MENU",
+    "SETUP_MENU": "MENU",
+    "SPEAKER": "SETUP_MENU", "WIFI": "SETUP_MENU",
+    "WIFI_RESULT": "SETUP_MENU", "CALIB": "SETUP_MENU",
+    "INFO": "SETUP_MENU",
+}
+
+_IDLE_CLOSE_S = 30.0
 
 # Sleep dial: oven-timer feel. Slow turning steps 10 min per detent;
 # once detents arrive faster than _SLEEP_FAST_S apart the step grows to
@@ -83,18 +102,20 @@ class SetupUI:
         self._calib_first: tuple[float, float] | None = None
         self._sleep_min = 0
         self._sleep_last_turn = 0.0
+        self._last_input = 0.0
 
     # ---------- lifecycle ------------------------------------------------
 
     def open(self) -> None:
         self.active = True
+        self._last_input = time.monotonic()
         self._goto("MENU")
-        log.info("setup opened")
+        log.info("menu opened")
 
     def close(self) -> None:
         self.active = False
         self._gen += 1
-        log.info("setup closed")
+        log.info("menu closed")
 
     def _goto(self, screen: str) -> None:
         self._screen = screen
@@ -137,6 +158,7 @@ class SetupUI:
     # ---------- input ----------------------------------------------------
 
     def handle_rotate(self, delta: int) -> None:
+        self._last_input = time.monotonic()
         if self._screen == "PASSWORD":
             self._pw_pos = (self._pw_pos + delta) % len(_PW_STRIP)
             return
@@ -153,10 +175,13 @@ class SetupUI:
             self._cursor = max(0, min(n - 1, self._cursor + delta))
 
     def handle_short(self) -> None:
+        self._last_input = time.monotonic()
         if self._busy:
             return
         if self._screen == "MENU":
             self._menu_select(_MENU_ITEMS[self._cursor])
+        elif self._screen == "SETUP_MENU":
+            self._menu_select(_SETUP_ITEMS[self._cursor])
         elif self._screen == "SPEAKER":
             self._pick_speaker()
         elif self._screen == "WIFI":
@@ -165,22 +190,28 @@ class SetupUI:
             self._pw_key()
         elif self._screen == "SLEEP":
             self._pick_sleep()
+        elif self._screen in ("HISTORY", "FAVORITES"):
+            self._play_entry()
         elif self._screen in ("INFO", "WIFI_RESULT"):
-            self._goto("MENU")
+            self._goto(_PARENT.get(self._screen, "MENU"))
 
     def handle_long(self) -> None:
-        """Back one level; at the root, exit setup."""
+        """Back one level; at the root, close the menu."""
+        self._last_input = time.monotonic()
         if self._screen == "MENU":
             self.close()
         elif self._screen == "PASSWORD":
             self._goto("WIFI")
             self._start_scan()
         else:
-            self._goto("MENU")
+            self._goto(_PARENT.get(self._screen, "MENU"))
 
     def handle_double(self) -> None:
+        self._last_input = time.monotonic()
         if self._screen == "PASSWORD":     # backspace shortcut
             self._pw_text = self._pw_text[:-1]
+        elif self._screen in ("HISTORY", "FAVORITES"):
+            self._toggle_star()
 
     def handle_tap(self, x: float, y: float) -> None:
         """Touch input while setup is open — used by calibration."""
@@ -206,11 +237,30 @@ class SetupUI:
     def _item_count(self) -> int:
         if self._screen == "MENU":
             return len(_MENU_ITEMS)
+        if self._screen == "SETUP_MENU":
+            return len(_SETUP_ITEMS)
         with self._lock:
             return len(self._items)
 
     def _menu_select(self, item: str) -> None:
-        if item == "Speaker":
+        if item == "Stop":
+            stop = getattr(self._worker, "stop_playback", None)
+            if stop is not None:
+                stop()
+            self.close()
+        elif item == "History":
+            self._goto("HISTORY")
+            with self._lock:
+                self._items = history.entries()
+        elif item == "Favorites":
+            self._goto("FAVORITES")
+            with self._lock:
+                self._items = history.entries(favorites_only=True)
+        elif item == "Setup":
+            self._goto("SETUP_MENU")
+        elif item == "Exit":
+            self.close()
+        elif item == "Speaker":
             self._goto("SPEAKER")
             self._spawn("Searching speakers", discovery.discover)
         elif item == "WiFi":
@@ -233,8 +283,6 @@ class SetupUI:
         elif item == "Info":
             self._goto("INFO")
             self._spawn("Reading status", self._gather_info)
-        elif item == "Exit":
-            self.close()
 
     def _start_scan(self) -> None:
         self._spawn("Scanning WiFi", wifi.scan)
@@ -265,6 +313,28 @@ class SetupUI:
             self._pw_text = ""
             self._pw_pos = len(_PW_CONTROLS)
             self._goto("PASSWORD")
+
+    def _play_entry(self) -> None:
+        with self._lock:
+            if not (0 <= self._cursor < len(self._items)):
+                return
+            entry = self._items[self._cursor]
+        play = getattr(self._worker, "play_history", None)
+        if play is not None:
+            play(entry)
+        self.close()                       # drop to the status screen
+
+    def _toggle_star(self) -> None:
+        with self._lock:
+            if not (0 <= self._cursor < len(self._items)):
+                return
+            entry = self._items[self._cursor]
+        starred = history.toggle_favorite(entry.station_id)
+        self._flash(("★ " if starred else "unstarred ") + entry.station_title)
+        with self._lock:
+            self._items = history.entries(
+                favorites_only=self._screen == "FAVORITES")
+            self._cursor = min(self._cursor, max(0, len(self._items) - 1))
 
     def _pick_sleep(self) -> None:
         minutes = self._sleep_min
@@ -305,9 +375,17 @@ class SetupUI:
     # ---------- drawing ----------------------------------------------------
 
     def draw(self, device, frame: int, fs: fonts.FontSet) -> None:
+        # the menu overlays a playing radio and steals the volume knob —
+        # never let it sit open forgotten
+        if time.monotonic() - self._last_input > _IDLE_CLOSE_S:
+            self.close()
+            return
         with canvas(device) as d:
             title = {
-                "MENU": "SETUP",
+                "MENU": "MENU",
+                "SETUP_MENU": "SETUP",
+                "HISTORY": "HISTORY",
+                "FAVORITES": "FAVORITES",
                 "SPEAKER": "SPEAKER",
                 "WIFI": "WIFI",
                 "WIFI_RESULT": "WIFI",
@@ -315,11 +393,24 @@ class SetupUI:
                 "PASSWORD": self._pw_ssid[:20],
                 "CALIB": "CALIBRATE",
                 "INFO": "INFO",
-            }.get(self._screen, "SETUP")
+            }.get(self._screen, "MENU")
             self._draw_titlebar(d, device, fs, title, frame)
 
             if self._screen == "MENU":
                 self._draw_list(d, device, fs, _MENU_ITEMS, self._cursor)
+            elif self._screen == "SETUP_MENU":
+                self._draw_list(d, device, fs, _SETUP_ITEMS, self._cursor)
+            elif self._screen in ("HISTORY", "FAVORITES"):
+                with self._lock:
+                    rows = [
+                        f"{'★ ' if e.favorite else ''}{e.station_title}"
+                        f" — {e.place_name}"
+                        for e in self._items
+                    ]
+                empty = ("Nothing played yet" if self._screen == "HISTORY"
+                         else "No favorites — ★ in History with 2x press")
+                self._draw_list(d, device, fs, rows, self._cursor,
+                                empty=empty)
             elif self._screen == "SPEAKER":
                 with self._lock:
                     rows = [f"{s.name}  {s.ip}" for s in self._items]
@@ -358,9 +449,11 @@ class SetupUI:
     def _draw_titlebar(self, d, device, fs, title: str, frame: int) -> None:
         W = device.width
         hint = {
-            "MENU": "turn·pick  press·ok  hold·exit",
+            "MENU": "turn·pick  press·ok  hold·close",
             "PASSWORD": "press·type  2x·del  hold·back",
             "SLEEP": "turn·time  press·set  hold·back",
+            "HISTORY": "press·play  2x·star  hold·back",
+            "FAVORITES": "press·play  2x·unstar  hold·back",
         }.get(self._screen, "hold·back")
         hw = d.textlength(hint, font=fs.tiny)
         d.text((W - hw - 2, 0), hint, font=fs.tiny, fill=AMBER_GHOST)
