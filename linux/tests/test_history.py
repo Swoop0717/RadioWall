@@ -119,3 +119,49 @@ def test_worker_skipped_station_not_recorded(hist):
         assert ids == ["S1"]               # only the survivor recorded
     finally:
         w.stop()
+
+
+def test_worker_favorite_current_records_and_stars(hist):
+    from tests.test_state import FakeRG, FakeWiim, FakePlaces, _stations
+    from radiowall.radio import RadioWorker, PlayAt
+    from radiowall.state import AppState
+
+    rg = FakeRG({"p1": _stations(1)})
+    state = AppState()
+    w = RadioWorker(state, FakePlaces(), rg=rg, wiim=FakeWiim(),
+                    use_decoder=False)
+    w.start()                              # default 30 s window: NOT recorded
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        time.sleep(0.3)
+        assert hist.entries() == []        # threshold far away
+        w.favorite_current()               # triple-press
+        time.sleep(0.3)
+        entries = hist.entries(favorites_only=True)
+        assert len(entries) == 1 and entries[0].station_id == "S0"
+        assert "★" in state.snapshot().status_text
+
+        w.favorite_current()               # toggle off
+        time.sleep(0.3)
+        assert hist.entries(favorites_only=True) == []
+        assert len(hist.entries()) == 1    # stays in plain history
+    finally:
+        w.stop()
+
+
+def test_worker_favorite_with_nothing_playing(hist):
+    from tests.test_state import FakeRG, FakeWiim, FakePlaces
+    from radiowall.radio import RadioWorker
+    from radiowall.state import AppState
+
+    state = AppState()
+    w = RadioWorker(state, FakePlaces(), rg=FakeRG({}), wiim=FakeWiim(),
+                    use_decoder=False)
+    w.start()
+    try:
+        w.favorite_current()
+        time.sleep(0.3)
+        assert state.snapshot().status_text == "Nothing playing"
+        assert hist.entries() == []
+    finally:
+        w.stop()

@@ -6,7 +6,7 @@ short press = select, long press = back (at the root: close). Holding
 on to ~3 s (VERY_LONG) stops playback from anywhere.
 
 Screens:
-  MENU       Stop · Sleep timer · History · Favorites · Setup · Exit
+  MENU       Sleep timer · History · Favorites · Setup
   HISTORY    recently played stations; press = replay, 2x = star
   FAVORITES  starred history entries
   SLEEP      oven-style dial, 10/30-min steps
@@ -59,8 +59,9 @@ _PW_CHARS = (
 )
 _PW_STRIP = _PW_CONTROLS + _PW_CHARS
 
-_MENU_ITEMS = ["Stop", "Sleep timer", "History", "Favorites",
-               "Setup", "Exit"]
+# No Stop / Exit items: hold-to-3s stops from anywhere, hold-at-root
+# closes — both already on the knob, both shown in the hint bar.
+_MENU_ITEMS = ["Sleep timer", "History", "Favorites", "Setup"]
 _SETUP_ITEMS = ["Speaker", "WiFi", "Touch calibration", "Info"]
 
 # hold = back one level; at MENU it closes
@@ -243,12 +244,7 @@ class SetupUI:
             return len(self._items)
 
     def _menu_select(self, item: str) -> None:
-        if item == "Stop":
-            stop = getattr(self._worker, "stop_playback", None)
-            if stop is not None:
-                stop()
-            self.close()
-        elif item == "History":
+        if item == "History":
             self._goto("HISTORY")
             with self._lock:
                 self._items = history.entries()
@@ -258,8 +254,6 @@ class SetupUI:
                 self._items = history.entries(favorites_only=True)
         elif item == "Setup":
             self._goto("SETUP_MENU")
-        elif item == "Exit":
-            self.close()
         elif item == "Speaker":
             self._goto("SPEAKER")
             self._spawn("Searching speakers", discovery.discover)

@@ -82,7 +82,14 @@ class PlayEntry:
     entry: history.Entry
 
 
-Command = PlayAt | Next | Stop | SetVolume | SetSleep | PlayEntry
+@dataclass(frozen=True)
+class FavoriteCurrent:
+    """Triple-press: toggle the currently playing station's star."""
+    pass
+
+
+Command = (PlayAt | Next | Stop | SetVolume | SetSleep | PlayEntry
+           | FavoriteCurrent)
 
 
 def wiim_ip() -> str:
@@ -124,6 +131,7 @@ class RadioWorker:
         self._record_after_s = history.RECORD_AFTER_S
         self._pending_record: history.Entry | None = None
         self._record_at = 0.0
+        self._current_entry: history.Entry | None = None
         self._sync_fast_s = SYNC_FAST_S  # instance attrs so tests can shrink
         self._sync_slow_s = SYNC_SLOW_S
         self._thread = threading.Thread(target=self._loop, name="radio",
@@ -168,6 +176,10 @@ class RadioWorker:
         """Menu History/Favorites entry point."""
         self.submit(PlayEntry(entry))
 
+    def favorite_current(self) -> None:
+        """Triple-press entry point."""
+        self.submit(FavoriteCurrent())
+
     def sleep_minutes_left(self) -> int:
         """Minutes until the armed sleep timer fires (0 = not armed)."""
         deadline = self._sleep_deadline
@@ -209,6 +221,8 @@ class RadioWorker:
                 self._handle_sleep(cmd.minutes)
             elif isinstance(cmd, PlayEntry):
                 self._handle_play_entry(cmd.entry)
+            elif isinstance(cmd, FavoriteCurrent):
+                self._handle_favorite()
             self._flush_volume()
             self._check_sleep()
             self._check_record()
@@ -392,6 +406,7 @@ class RadioWorker:
             place_id=s.place.id, place_name=s.place.name,
             country=s.place.country,
             lat=s.place.lat100 / 100.0, lon=s.place.lon100 / 100.0)
+        self._current_entry = self._pending_record
         self._record_at = self._played_at + self._record_after_s
 
     def _handle_sleep(self, minutes: int) -> None:
@@ -438,6 +453,21 @@ class RadioWorker:
                                 place=place, stations=[station])
         self._play_next_in_session()
 
+    def _handle_favorite(self) -> None:
+        """Star (or unstar) whatever is playing right now. Records the
+        station immediately — a triple-press is a stronger signal than
+        surviving the 30 s window."""
+        e = self._current_entry
+        if e is None:
+            self._state.set_status("Nothing playing")
+            return
+        history.add(e)
+        starred = history.toggle_favorite(e.station_id)
+        self._state.set_status(
+            ("★ " if starred else "unstarred ") + e.station_title)
+        log.info("favorite %s: %s", "on" if starred else "off",
+                 e.station_title)
+
     def _check_record(self) -> None:
         if (self._pending_record is not None
                 and time.monotonic() >= self._record_at):
@@ -451,6 +481,7 @@ class RadioWorker:
             self._wiim.stop()
         self._session = None
         self._pending_record = None
+        self._current_entry = None
         self._state.set_idle()
         log.info("stopped")
 

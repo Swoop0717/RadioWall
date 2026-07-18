@@ -2,10 +2,11 @@
 
 Inputs: IR touch frame (tap → play nearest city), one rotary encoder.
 The longer you hold, the more drastic: tap = next station, double-tap
-= cycle now-playing ↔ visualizer screens, hold ~0.8 s = menu (music
-keeps playing; Stop/Sleep/History/Favorites/Setup), keep holding to
-~3 s = stop everything. Rotate = volume, or navigation while the menu
-is open. Dev HAT buttons (A = cycle screens, B = home) where present.
+= cycle now-playing ↔ visualizer screens, triple-tap = star the
+current station, hold ~0.8 s = menu (music keeps playing;
+Sleep/History/Favorites/Setup), keep holding to ~3 s = stop
+everything. Rotate = volume, or navigation while the menu is open.
+Dev HAT buttons (A = cycle screens, B = home) where present.
 
 All network I/O runs on the RadioWorker thread; this loop only polls
 inputs at ~50 Hz and renders from a state snapshot.
@@ -187,6 +188,8 @@ def main() -> int:
                     setup.open()           # menu; music keeps playing
                 elif g is Gesture.DOUBLE:
                     screen = (screen + 1) % NUM_SCREENS
+                elif g is Gesture.TRIPLE:
+                    worker.favorite_current()
 
             a_event, b_event = buttons.poll()
             if a_event and not setup.active:

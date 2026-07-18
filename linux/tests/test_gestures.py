@@ -78,15 +78,26 @@ def test_long_only_fires_once_per_hold():
     assert det.update([], LONG_S + 9.0) == []
 
 
-def test_rapid_triple_press():
-    # press1 + press2 = DOUBLE; press3 starts fresh → SHORT after window
+def test_rapid_triple_press_is_triple():
+    # three quick presses = TRIPLE, fired on the third press-down,
+    # nothing else afterwards (third release swallowed)
     out = run([
         (0.00, [(0.00, True), (0.05, False),
                 (0.10, True), (0.15, False),
                 (0.20, True), (0.25, False)]),
         (0.25 + DOUBLE_S + 0.05, []),
+        (2.00, []),
     ])
-    assert out == [Gesture.DOUBLE, Gesture.SHORT]
+    assert out == [Gesture.TRIPLE]
+
+
+def test_double_waits_out_the_triple_window():
+    det = GestureDetector()
+    det.update([(0.00, True), (0.05, False),
+                (0.10, True), (0.15, False)], 0.15)
+    # inside the window a triple is still possible — no DOUBLE yet
+    assert det.update([], 0.15 + DOUBLE_S - 0.05) == []
+    assert det.update([], 0.15 + DOUBLE_S + 0.05) == [Gesture.DOUBLE]
 
 
 def test_short_then_long():

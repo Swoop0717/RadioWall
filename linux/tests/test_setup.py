@@ -181,8 +181,8 @@ def _wait_items(u, timeout=2.0):
 
 
 def _into_setup(u):
-    """Root menu → Setup submenu (Setup sits at index 4)."""
-    u.handle_rotate(+4)
+    """Root menu → Setup submenu (Setup sits at index 3)."""
+    u.handle_rotate(+3)
     u.handle_short()
 
 
@@ -300,8 +300,7 @@ def test_setup_sleep_dial_slow_steps_10min(ui):
     u, worker = ui
     worker.sleep_minutes = []
     worker.set_sleep_timer = worker.sleep_minutes.append
-    u.handle_rotate(+1)                    # MENU: Sleep timer
-    u.handle_short()
+    u.handle_short()                       # MENU: Sleep timer (cursor 0)
     assert u._screen == "SLEEP"
     for _ in range(3):                     # slow detents → 10 min each
         u.handle_rotate(+1)
@@ -317,7 +316,6 @@ def test_setup_sleep_dial_fast_spin_accelerates(ui):
     u, worker = ui
     worker.sleep_minutes = []
     worker.set_sleep_timer = worker.sleep_minutes.append
-    u.handle_rotate(+1)
     u.handle_short()
     for _ in range(12):                    # rapid spin, no delay between
         u.handle_rotate(+1)
@@ -330,21 +328,11 @@ def test_setup_sleep_dial_fast_spin_accelerates(ui):
 def test_setup_sleep_dial_reopens_with_armed_time(ui):
     u, worker = ui
     worker.sleep_minutes_left = lambda: 42
-    u.handle_rotate(+1)
     u.handle_short()
     assert u._sleep_min == 50              # rounded up to the 10-min grid
 
 
 # --- history / favorites in the menu ------------------------------------------
-
-def test_menu_stop_item_stops_and_closes(ui):
-    u, worker = ui
-    worker.stops = []
-    worker.stop_playback = lambda: worker.stops.append(1)
-    u.handle_short()                       # root cursor 0 = Stop
-    assert worker.stops == [1]
-    assert not u.active
-
 
 def test_menu_history_play_and_star(ui, monkeypatch):
     from radiowall import history
@@ -362,7 +350,7 @@ def test_menu_history_play_and_star(ui, monkeypatch):
     worker.played_entries = []
     worker.play_history = worker.played_entries.append
 
-    u.handle_rotate(+2)                    # History
+    u.handle_rotate(+1)                    # History
     u.handle_short()
     assert u._screen == "HISTORY"
     u.handle_rotate(+1)                    # older entry: Radio Wien
@@ -373,7 +361,7 @@ def test_menu_history_play_and_star(ui, monkeypatch):
     assert not u.active                    # menu closed to show playback
 
     u.open()
-    u.handle_rotate(+3)                    # Favorites
+    u.handle_rotate(+2)                    # Favorites
     u.handle_short()
     assert u._screen == "FAVORITES"
     u.handle_double()                      # unstar from favorites view
