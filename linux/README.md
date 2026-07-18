@@ -350,9 +350,13 @@ linux/
 └── radiowall/
     ├── main.py          ← entry point: mockup + visualizer loop, buttons
     ├── logging_setup.py
+    ├── config.py        ← persistent config store (setup UI writes it)
+    ├── discovery.py     ← WiiM/LinkPlay SSDP discovery
+    ├── wifi.py          ← nmcli scan/connect wrappers
     ├── display/
     │   ├── factory.py   ← picks emulator / st7789 / ssd1322 by env
     │   ├── fonts.py     ← height-relative, env-tunable font sizes
+    │   ├── setup_ui.py  ← on-device setup: speaker / WiFi / calibration
     │   ├── visualizer.py← vfd / bars / mirror / radial / wave / scope / waterfall / vu
     │   └── mirror.py    ← broadcast frames to the LAN viewer
     ├── audio/

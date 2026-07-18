@@ -36,7 +36,6 @@ from radiowall.state import AppState, Session
 log = logging.getLogger(__name__)
 
 VOL_DEBOUNCE_S = 0.2
-DEFAULT_WIIM_IP = "192.168.0.33"
 
 # Visualizer sync polling: after a play command, poll the WiiM's curpos
 # often (it locks the visualizer to the speaker as soon as sound starts),
@@ -73,7 +72,14 @@ Command = PlayAt | Next | Stop | SetVolume
 
 
 def wiim_ip() -> str:
-    return os.getenv("RADIOWALL_WIIM_IP", DEFAULT_WIIM_IP).strip()
+    """Speaker address: env override > config store (set by the on-device
+    setup UI) > empty. Empty means 'not configured yet' — the worker
+    then tells the user to run setup instead of poking a dead IP."""
+    env = os.getenv("RADIOWALL_WIIM_IP", "").strip()
+    if env:
+        return env
+    from radiowall import config
+    return str(config.get("wiim_ip") or "").strip()
 
 
 class RadioWorker:
@@ -84,7 +90,13 @@ class RadioWorker:
         self._state = state
         self._places = places
         self._rg = rg or RadioGarden()
-        self._wiim = wiim or LinkPlay(wiim_ip())
+        if wiim is not None:
+            self._wiim: LinkPlay | None = wiim
+        else:
+            ip = wiim_ip()
+            self._wiim = LinkPlay(ip) if ip else None
+            if not ip:
+                log.warning("no WiiM configured — hold the knob for setup")
         self._use_decoder = use_decoder
         self._queue: queue.Queue[Command] = queue.Queue()
         self._session: Session | None = None
@@ -119,11 +131,20 @@ class RadioWorker:
         if stop_playback and self._session is not None:
             if self._use_decoder:
                 decoder.stop()
-            self._wiim.stop()
+            if self._wiim is not None:
+                self._wiim.stop()
             log.info("playback stopped on exit")
 
     def submit(self, cmd: Command) -> None:
         self._queue.put(cmd)
+
+    def set_wiim(self, ip: str) -> None:
+        """Swap the speaker (called by the setup UI after discovery).
+        Just an attribute swap — no network here, this runs on the
+        render thread."""
+        self._wiim = LinkPlay(ip)
+        self._sent_volume = None
+        log.info("speaker set to %s", ip)
 
     # --- worker thread ----------------------------------------------------
 
@@ -152,14 +173,16 @@ class RadioWorker:
         speaker is actually playing (replaces guessing VIS_DELAY). Own
         thread: getPlayerStatus can block for seconds and must never
         stall touch handling on the worker thread."""
-        get_position = getattr(self._wiim, "get_position", None)
-        if get_position is None:
-            return                       # fakes/tests without the method
         last_poll = 0.0
         while self._running:
             time.sleep(min(0.25, self._sync_fast_s / 4))
             now = time.monotonic()
             if self._session is None:
+                continue
+            # looked up per-iteration: the setup UI can swap the speaker
+            # at runtime, and fakes/tests may not have the method at all
+            get_position = getattr(self._wiim, "get_position", None)
+            if get_position is None:
                 continue
             fast = now - self._played_at < SYNC_FAST_WINDOW_S
             interval = self._sync_fast_s if fast else self._sync_slow_s
@@ -216,6 +239,9 @@ class RadioWorker:
         if (self._pending_volume is not None
                 and time.monotonic() >= self._volume_deadline):
             vol = self._pending_volume
+            if self._wiim is None:
+                self._pending_volume = None
+                return
             if vol != self._sent_volume:
                 if self._wiim.set_volume(vol):
                     self._sent_volume = vol
@@ -224,6 +250,8 @@ class RadioWorker:
             self._pending_volume = None
 
     def _sync_volume(self) -> None:
+        if self._wiim is None:
+            return
         vol = self._wiim.get_volume()
         if vol is not None:
             self._sent_volume = vol
@@ -288,6 +316,10 @@ class RadioWorker:
             self._state.set_status("No more stations")
             return
         station = s.advance()
+        if self._wiim is None:
+            self._state.set_status("No speaker — hold knob for setup")
+            self._state.set_idle()
+            return
         self._state.set_loading(s.place.name, country_name(s.place.country))
         stream_url = self._rg.resolve_stream_url(station.id)
         if not stream_url:
@@ -312,7 +344,8 @@ class RadioWorker:
     def _handle_stop(self) -> None:
         if self._use_decoder:
             decoder.stop()
-        self._wiim.stop()
+        if self._wiim is not None:
+            self._wiim.stop()
         self._session = None
         self._state.set_idle()
         log.info("stopped")

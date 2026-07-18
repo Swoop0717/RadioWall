@@ -72,7 +72,10 @@ def test_long_only_fires_once_per_hold():
     det = GestureDetector()
     det.update([(0.0, True)], 0.0)
     assert det.update([], LONG_S + 0.1) == [Gesture.LONG]
-    assert det.update([], LONG_S + 5.0) == []
+    # keeping the hold eventually adds VERY_LONG (setup gesture),
+    # but LONG itself never repeats — and each fires exactly once
+    assert det.update([], LONG_S + 5.0) == [Gesture.VERY_LONG]
+    assert det.update([], LONG_S + 9.0) == []
 
 
 def test_rapid_triple_press():

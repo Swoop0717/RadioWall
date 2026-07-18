@@ -1,4 +1,5 @@
-"""Encoder push-button gesture detection: SHORT / LONG / DOUBLE press.
+"""Encoder push-button gesture detection: SHORT / LONG / DOUBLE /
+VERY_LONG press.
 
 Pure timing logic over debounced press edges — no hardware, fully
 unit-testable with synthetic timestamps.
@@ -8,6 +9,9 @@ Semantics (one-encoder car-radio mapping):
 - LONG   fires AT the 800 ms mark *while still held* — STOP is the panic
          gesture and must not wait for release. The following release is
          swallowed.
+- VERY_LONG fires at the 3 s mark while still held (the setup-menu
+         gesture). LONG has necessarily fired at 800 ms on the way —
+         callers treat "stop, then setup opens" as the expected ride.
 - DOUBLE fires on the second press-down within 300 ms of the first
          release (the second release is swallowed).
 - SHORT  fires 300 ms after a release, once a DOUBLE can no longer
@@ -25,20 +29,25 @@ from enum import Enum
 
 LONG_S = 0.800
 DOUBLE_S = 0.300
+VERY_LONG_S = 3.0
 
 
 class Gesture(Enum):
     SHORT = "short"
     LONG = "long"
     DOUBLE = "double"
+    VERY_LONG = "very_long"
 
 
 class GestureDetector:
-    def __init__(self, long_s: float = LONG_S, double_s: float = DOUBLE_S):
+    def __init__(self, long_s: float = LONG_S, double_s: float = DOUBLE_S,
+                 very_long_s: float = VERY_LONG_S):
         self._long_s = long_s
         self._double_s = double_s
+        self._very_long_s = very_long_s
         self._down_at: float | None = None    # button currently held since
         self._long_fired = False              # LONG already emitted this hold
+        self._very_fired = False              # VERY_LONG emitted this hold
         self._release_at: float | None = None # pending SHORT candidate
 
     def update(self, edges: list[tuple[float, bool]], now: float) -> list[Gesture]:
@@ -56,6 +65,7 @@ class GestureDetector:
                 else:
                     self._down_at = ts
                     self._long_fired = False
+                    self._very_fired = False
             else:                             # release
                 if self._long_fired:
                     self._long_fired = False  # swallowed (post-LONG or post-DOUBLE)
@@ -69,6 +79,12 @@ class GestureDetector:
                 and now - self._down_at >= self._long_s):
             out.append(Gesture.LONG)
             self._long_fired = True
+
+        # VERY_LONG: keep holding past LONG to reach the setup menu
+        if (self._down_at is not None and not self._very_fired
+                and now - self._down_at >= self._very_long_s):
+            out.append(Gesture.VERY_LONG)
+            self._very_fired = True
 
         # SHORT: release older than the double window with no second press
         if (self._release_at is not None

@@ -2,8 +2,10 @@
 
 Inputs: IR touch frame (tap → play nearest city), one rotary encoder
 (rotate = volume; short press = next station; long press = stop;
-double press = cycle now-playing ↔ visualizer screens), plus the dev
-HAT's two buttons (A = cycle screens, B = home) where present.
+hold ≥3 s = setup menu; double press = cycle now-playing ↔ visualizer
+screens), plus the dev HAT's two buttons (A = cycle screens, B = home)
+where present. While setup is open the encoder and touch input belong
+to the setup UI.
 
 All network I/O runs on the RadioWorker thread; this loop only polls
 inputs at ~50 Hz and renders from a state snapshot.
@@ -25,6 +27,7 @@ from radiowall.audio import decoder, proxy
 from radiowall.audio.hub import StreamHub
 from radiowall.display import fonts, screens, visualizer
 from radiowall.display.factory import make_device
+from radiowall.display.setup_ui import SetupUI
 from radiowall.input.encoder import RotaryEncoder
 from radiowall.input.gestures import Gesture, GestureDetector
 from radiowall.input.touch import TouchInput
@@ -133,6 +136,7 @@ def main() -> int:
     encoder = RotaryEncoder()
     gestures = GestureDetector()
     touch = TouchInput()
+    setup = SetupUI(worker)
     vol_step = int(os.getenv("RADIOWALL_VOL_STEP", "2"))
     screen = 0
 
@@ -140,39 +144,64 @@ def main() -> int:
         frame = 0
         fps_t = time.monotonic()
         fps_n = 0
+        was_in_setup = False
         while True:
             now = time.monotonic()
 
             taps = touch.poll()
-            if taps:                       # newest tap wins within a frame
+            if taps and setup.active:      # calibration wizard eats taps
+                for t in taps:
+                    setup.handle_tap(t.x, t.y)
+            elif taps:                     # newest tap wins within a frame
                 lat, lon = geo.tap_to_latlon(taps[-1].x, taps[-1].y, calib)
                 log.info("tap (%.3f, %.3f) -> (%.2f, %.2f)",
                          taps[-1].x, taps[-1].y, lat, lon)
                 worker.submit(PlayAt(lat, lon))
 
             delta, _presses = encoder.poll()
-            if delta:
+            if delta and setup.active:
+                setup.handle_rotate(delta)
+            elif delta:
                 worker.submit(SetVolume(state.bump_volume(delta * vol_step)))
 
             for g in gestures.update(encoder.poll_events(), now):
                 log.info("gesture: %s", g.name)
-                if g is Gesture.SHORT:
+                if setup.active:
+                    if g is Gesture.SHORT:
+                        setup.handle_short()
+                    elif g is Gesture.LONG:
+                        setup.handle_long()
+                    elif g is Gesture.DOUBLE:
+                        setup.handle_double()
+                elif g is Gesture.SHORT:
                     worker.submit(Next())
                 elif g is Gesture.LONG:
                     worker.submit(Stop())
                 elif g is Gesture.DOUBLE:
                     screen = (screen + 1) % NUM_SCREENS
+                elif g is Gesture.VERY_LONG:
+                    setup.open()
+                    # reload calibration when setup closes (wizard may
+                    # have rewritten it) — cheap enough to do every exit
 
             a_event, b_event = buttons.poll()
-            if a_event:
+            if a_event and not setup.active:
                 screen = (screen + 1) % NUM_SCREENS
-            if b_event:
+            if b_event and not setup.active:
                 screen = 0
 
-            if screen == 0:
-                screens.draw_status_screen(device, frame, fs, state.snapshot())
+            if setup.active:
+                setup.draw(device, frame, fs)
+                was_in_setup = True
             else:
-                VISUALIZERS[screen - 1](device, frame, fs)
+                if was_in_setup:
+                    calib = geo.load_calibration()
+                    was_in_setup = False
+                if screen == 0:
+                    screens.draw_status_screen(device, frame, fs,
+                                               state.snapshot())
+                else:
+                    VISUALIZERS[screen - 1](device, frame, fs)
 
             frame += 1
             fps_n += 1

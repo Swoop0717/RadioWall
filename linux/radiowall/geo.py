@@ -33,19 +33,33 @@ class TouchCalibration:
 
 
 def load_calibration() -> TouchCalibration:
+    """Env-pointed JSON file wins; else the config store (written by the
+    on-device calibration wizard); else identity."""
     path = os.getenv("RADIOWALL_TOUCH_CALIB", "").strip()
-    if not path:
-        return TouchCalibration()
-    try:
-        with open(path) as f:
-            d = json.load(f)
-        cal = TouchCalibration(x0=float(d["x0"]), y0=float(d["y0"]),
-                               x1=float(d["x1"]), y1=float(d["y1"]))
-        log.info("touch calibration loaded from %s: %s", path, cal)
-        return cal
-    except (OSError, KeyError, ValueError) as e:
-        log.warning("touch calibration %s unreadable (%s); using identity", path, e)
-        return TouchCalibration()
+    if path:
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            cal = TouchCalibration(x0=float(d["x0"]), y0=float(d["y0"]),
+                                   x1=float(d["x1"]), y1=float(d["y1"]))
+            log.info("touch calibration loaded from %s: %s", path, cal)
+            return cal
+        except (OSError, KeyError, ValueError) as e:
+            log.warning("touch calibration %s unreadable (%s); using identity",
+                        path, e)
+            return TouchCalibration()
+
+    from radiowall import config
+    d = config.get("touch_calib")
+    if isinstance(d, dict):
+        try:
+            cal = TouchCalibration(x0=float(d["x0"]), y0=float(d["y0"]),
+                                   x1=float(d["x1"]), y1=float(d["y1"]))
+            log.info("touch calibration from config store: %s", cal)
+            return cal
+        except (KeyError, ValueError, TypeError) as e:
+            log.warning("config touch_calib invalid (%s); using identity", e)
+    return TouchCalibration()
 
 
 def tap_to_latlon(x: float, y: float,

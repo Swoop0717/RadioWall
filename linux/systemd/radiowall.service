@@ -14,6 +14,9 @@ EnvironmentFile=-/etc/radiowall.env
 # Old Pi 3 B+ dev rig used /root/RadioWall instead — adjust paths if reviving.
 WorkingDirectory=/home/orangepi/RadioWall/linux
 ExecStart=/home/orangepi/RadioWall/linux/.venv/bin/python -m radiowall
+# Creates /var/lib/radiowall for the config store (setup UI writes
+# speaker choice + touch calibration there).
+StateDirectory=radiowall
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
