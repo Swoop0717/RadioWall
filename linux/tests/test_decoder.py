@@ -82,6 +82,32 @@ def test_wave_shorter_history_returns_what_exists():
     assert len(wave) == 2 * WAVE_POINTS
 
 
+def test_sync_playback_anchors_consumption_clock():
+    """With a curpos sync, the audible frame is picked by the WiiM's
+    playback position (extrapolated since the poll), not wall time."""
+    import time as _time
+    d = _Decoder("test")
+    _feed(d, [(440, 0.5)], chunks=100)          # ~2.3 s of stream decoded
+    chunk_s = HOP_SAMPLES / SAMPLE_RATE
+    now = _time.monotonic()
+
+    d.sync_playback(0.5, now)                   # speaker is at 0.5 s
+    with d._lock:
+        assert d._index() == int(0.5 / chunk_s)
+
+    d.sync_playback(0.5, now - 1.0)             # polled 1 s ago → 1.5 s
+    with d._lock:
+        assert d._index() == int(1.5 / chunk_s)
+
+    d.sync_playback(60.0, now)                  # beyond decoded → freeze
+    with d._lock:
+        assert d._index() == 99
+
+
+def test_sync_playback_module_fn_is_noop_when_stopped():
+    decoder.sync_playback(1.0, 0.0)             # must not raise
+
+
 def test_all_bands_have_fft_bins():
     """Every log-spaced band must contain at least one FFT bin, else
     it renders permanently dark (regression guard for band layout)."""

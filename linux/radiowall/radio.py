@@ -38,6 +38,13 @@ log = logging.getLogger(__name__)
 VOL_DEBOUNCE_S = 0.2
 DEFAULT_WIIM_IP = "192.168.0.33"
 
+# Visualizer sync polling: after a play command, poll the WiiM's curpos
+# often (it locks the visualizer to the speaker as soon as sound starts),
+# then back off to an occasional drift check.
+SYNC_FAST_S = 2.0
+SYNC_SLOW_S = 10.0
+SYNC_FAST_WINDOW_S = 30.0
+
 
 # --- commands ------------------------------------------------------------
 
@@ -85,14 +92,22 @@ class RadioWorker:
         self._pending_volume: int | None = None
         self._volume_deadline = 0.0
         self._sent_volume: int | None = None
+        self._played_at = 0.0            # monotonic time of last play cmd
+        self._sync_logged = False        # one "synced" log line per station
+        self._sync_fast_s = SYNC_FAST_S  # instance attrs so tests can shrink
+        self._sync_slow_s = SYNC_SLOW_S
         self._thread = threading.Thread(target=self._loop, name="radio",
                                         daemon=True)
+        self._sync_thread = threading.Thread(
+            target=self._sync_loop, name="vis-sync", daemon=True)
 
     # --- public API (any thread) ----------------------------------------
 
     def start(self) -> None:
         self._running = True
         self._thread.start()
+        if self._use_decoder:
+            self._sync_thread.start()
 
     def stop(self, stop_playback: bool = False) -> None:
         """Shut the worker down. With stop_playback=True (natural program
@@ -130,6 +145,43 @@ class RadioWorker:
             elif isinstance(cmd, Stop):
                 self._handle_stop()
             self._flush_volume()
+
+    def _sync_loop(self) -> None:
+        """Poll the WiiM's playback position and hand it to the decoder,
+        which anchors the visualizer's consumption clock to what the
+        speaker is actually playing (replaces guessing VIS_DELAY). Own
+        thread: getPlayerStatus can block for seconds and must never
+        stall touch handling on the worker thread."""
+        get_position = getattr(self._wiim, "get_position", None)
+        if get_position is None:
+            return                       # fakes/tests without the method
+        last_poll = 0.0
+        while self._running:
+            time.sleep(min(0.25, self._sync_fast_s / 4))
+            now = time.monotonic()
+            if self._session is None:
+                continue
+            fast = now - self._played_at < SYNC_FAST_WINDOW_S
+            interval = self._sync_fast_s if fast else self._sync_slow_s
+            # a fresh play command restarts the cadence immediately
+            if now - max(last_poll, self._played_at) < interval:
+                continue
+            last_poll = now
+            t0 = now
+            result = get_position()
+            if result is None:
+                continue
+            status, pos_s = result
+            # curpos stays 0 while the WiiM is still buffering; syncing
+            # then would freeze the visualizer on the burst start.
+            if status != "play" or pos_s <= 0:
+                continue
+            # position was true somewhere inside the HTTP round trip
+            measured_at = (t0 + time.monotonic()) / 2
+            decoder.sync_playback(pos_s, measured_at)
+            if not self._sync_logged:
+                self._sync_logged = True
+                log.info("visualizer synced to WiiM position %.1fs", pos_s)
 
     def _absorb_volume(self, cmd: SetVolume) -> None:
         self._pending_volume = cmd.volume
@@ -254,6 +306,8 @@ class RadioWorker:
         if self._use_decoder:
             decoder.stop()
             decoder.start(stream_url)
+        self._played_at = time.monotonic()
+        self._sync_logged = False
 
     def _handle_stop(self) -> None:
         if self._use_decoder:

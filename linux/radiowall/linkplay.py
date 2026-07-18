@@ -115,6 +115,20 @@ class LinkPlay:
         status = self.get_status()
         return status.get("vol") if status else None
 
+    def get_position(self) -> tuple[str, float] | None:
+        """Playback state + position for visualizer sync: ("play", 12.3)
+        — curpos is milliseconds-as-string in getPlayerStatus. Single
+        attempt: a missed poll is cheaper than a blocked poller."""
+        body = self._request("getPlayerStatus", retries=0)
+        if not body:
+            return None
+        try:
+            status = json.loads(body)
+            pos_s = int(str(status.get("curpos", "0")).strip()) / 1000.0
+        except ValueError:
+            return None
+        return str(status.get("status", "")).strip(), pos_s
+
 
 def _main() -> int:
     import sys

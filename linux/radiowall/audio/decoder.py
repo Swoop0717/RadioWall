@@ -82,6 +82,16 @@ WAVE_POINTS = 64                  # scope waveform points stored per hop
 # burst pushed the whole timeline into the future and the delayed lookup
 # never found a frame — visualizer permanently dark on bursty stations.)
 VIS_DELAY_S = float(os.getenv("RADIOWALL_VIS_DELAY", "0") or 0)
+
+# Better than the fixed delay when available: the radio worker polls the
+# WiiM's getPlayerStatus `curpos` and calls sync_playback() with it. Both
+# the WiiM and our ffmpeg tap connect to the stream at the same moment
+# (the worker starts the decoder right after the play command), so the
+# WiiM's playback position maps directly onto our frame history — per
+# station, no hand tuning. Between polls the position is extrapolated at
+# real-time rate. RADIOWALL_VIS_SYNC_TRIM (seconds, may be negative)
+# nudges the mapping if a setup shows a constant residual offset.
+SYNC_TRIM_S = float(os.getenv("RADIOWALL_VIS_SYNC_TRIM", "0") or 0)
 _CHUNK_S = HOP_SAMPLES / SAMPLE_RATE
 _HISTORY_S = max(30.0, VIS_DELAY_S + 5.0)      # must exceed burst + delay
 _HISTORY_LEN = int(_HISTORY_S / _CHUNK_S)
@@ -110,6 +120,7 @@ class _Decoder:
             collections.deque(maxlen=_HISTORY_LEN)
         self._t0: Optional[float] = None      # wall time of first band frame
         self._frames_total = 0                # appended ever (incl. evicted)
+        self._sync: Optional[tuple[float, float]] = None  # (pos_s, measured_at)
         self._lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
@@ -191,15 +202,30 @@ class _Decoder:
 
     # -------- consumption-clock reads ---------------------------------
 
+    def sync_playback(self, pos_s: float, measured_at: float) -> None:
+        """Anchor the consumption clock to the speaker's real playback
+        position (stream seconds since track start, from WiiM curpos)."""
+        with self._lock:
+            self._sync = (pos_s, measured_at)
+
     def _index(self) -> Optional[int]:
         """History index that should be 'audible' now (lock held)."""
         if not self._history:
             return None
-        if VIS_DELAY_S <= 0:
+        if self._sync is not None:
+            # WiiM-reported position, extrapolated at real-time rate
+            # since the poll. Frame 0 of our history and stream second
+            # 0 of the WiiM's track are the same burst start — both
+            # connections were opened by the same play command.
+            pos, at = self._sync
+            stream_s = pos + (time.monotonic() - at) + SYNC_TRIM_S
+            idx = int(stream_s / _CHUNK_S)
+        elif VIS_DELAY_S <= 0:
             return len(self._history) - 1
-        if self._t0 is None:
-            return None
-        idx = int((time.monotonic() - self._t0 - VIS_DELAY_S) / _CHUNK_S)
+        else:
+            if self._t0 is None:
+                return None
+            idx = int((time.monotonic() - self._t0 - VIS_DELAY_S) / _CHUNK_S)
         if idx < 0:
             return None                        # still inside delay warm-up
         evicted = self._frames_total - len(self._history)
@@ -370,3 +396,11 @@ def get_rms() -> Optional[float]:
     if _singleton is None:
         return None
     return _singleton.get_rms()
+
+
+def sync_playback(pos_s: float, measured_at: float) -> None:
+    """Anchor the visualizer to the speaker's playback position (seconds
+    since track start + the monotonic time it was measured). No-op when
+    the decoder isn't running."""
+    if _singleton is not None:
+        _singleton.sync_playback(pos_s, measured_at)

@@ -280,3 +280,61 @@ def test_no_stations_in_city_sets_status():
         assert snap.status_text == "No stations found"
     finally:
         w.stop()
+
+
+# --- visualizer sync poller -------------------------------------------------
+
+def test_sync_poller_feeds_wiim_position_to_decoder(monkeypatch):
+    from radiowall.audio import decoder as dec
+
+    calls = []
+    monkeypatch.setattr(dec, "start", lambda url: None)
+    monkeypatch.setattr(dec, "stop", lambda: None)
+    monkeypatch.setattr(dec, "sync_playback",
+                        lambda pos, at: calls.append(pos))
+
+    class SyncWiim(FakeWiim):
+        def get_position(self):
+            return ("play", 7.5)
+
+    rg = FakeRG({"p1": _stations(1)})
+    w = RadioWorker(AppState(), FakePlaces(), rg=rg, wiim=SyncWiim(),
+                    use_decoder=True)
+    w._sync_fast_s = 0.05
+    w.start()
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        deadline = time.time() + 2.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.02)
+        assert calls and calls[0] == 7.5
+    finally:
+        w.stop()
+
+
+def test_sync_poller_ignores_buffering_position(monkeypatch):
+    """curpos=0 means the WiiM is still filling its buffer — syncing then
+    would freeze the visualizer on the burst start."""
+    from radiowall.audio import decoder as dec
+
+    calls = []
+    monkeypatch.setattr(dec, "start", lambda url: None)
+    monkeypatch.setattr(dec, "stop", lambda: None)
+    monkeypatch.setattr(dec, "sync_playback",
+                        lambda pos, at: calls.append(pos))
+
+    class BufferingWiim(FakeWiim):
+        def get_position(self):
+            return ("play", 0.0)
+
+    rg = FakeRG({"p1": _stations(1)})
+    w = RadioWorker(AppState(), FakePlaces(), rg=rg, wiim=BufferingWiim(),
+                    use_decoder=True)
+    w._sync_fast_s = 0.05
+    w.start()
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        time.sleep(0.4)
+        assert calls == []
+    finally:
+        w.stop()
