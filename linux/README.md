@@ -1,28 +1,28 @@
 # RadioWall — Linux port
 
-See [PLAN.md](PLAN.md) for the full plan and Build Order.
-
 ## Current state
 
-Running on the **final target hardware** since 2026-07-12: an **Orange Pi
-Zero 3W (Allwinner A733)** drives the 3.12" 256×64 **SSD1322** OLED
-(`RADIOWALL_DISPLAY=ssd1322`) with the VFD-style "now playing" mockup plus
-eight audio-reactive visualizers. An HTTP proxy re-serves the chosen stream to
-the WiiM at `:8000/stream.mp3` while a local ffmpeg→FFT path feeds the
-visualizer. Board is at `192.168.0.5`, user `orangepi`, key SSH.
+**Fully working product** on the final target hardware: an **Orange Pi
+Zero 3W (Allwinner A733)** at `192.168.0.5` (user `orangepi`, key SSH) drives
+the 3.12" 256×64 **SSD1322** OLED (`RADIOWALL_DISPLAY=ssd1322`), the EC11
+rotary encoder and the 55" IR touch frame (USB HID/evdev). The complete radio
+flow runs as a systemd service: touch → nearest city (`places.bin`, refreshed
+weekly by `radiowall-places.timer`) → Radio.garden stations → playback on a
+WiiM (LinkPlay HTTPS) or any Bluetooth speaker (ffmpeg → bluealsa A2DP).
+
+On top of that: eight audio-reactive visualizers (FFT tap synced to the
+speaker's real playback position), live ICY song titles, history + favorites,
+sleep timer, multiroom grouping, on-device setup for WiFi/speakers/touch
+calibration (no phone ever needed), silent/dead-station skipping and OLED
+burn-in protection. Gesture grammar and menu map: see the top-level
+[CLAUDE.md](../CLAUDE.md).
 
 The previous dev rig — **Raspberry Pi 3 B+ / DietPi (Trixie)** with the 1.14"
-240×135 **ST7789** HAT, systemd service, `/etc/radiowall.env` — still works
-unchanged (board profiles auto-detect; see below) and remains the fallback.
+240×135 **ST7789** HAT — still works unchanged (board profiles auto-detect;
+see below) and remains the fallback. The original ESP32 firmware lives on the
+`legacy/esp32` branch.
 
-Mode cycling was HAT-button-only, so on the Orange Pi the visualizers are
-unreachable until the EC11 encoder is wired into `main.py` (next step).
-
-Not yet ported from the ESP32 firmware: the actual radio logic (LinkPlay
-client, Radio.garden client, `places.bin` nearest-city lookup, touch→city→play
-state machine). The screen content is still a hardcoded mockup. See PLAN.md.
-
-> **Platform note:** PLAN.md originally targeted an **Orange Pi Zero 3W**
+> **Platform note:** the plan originally targeted an **Orange Pi Zero 3W**
 > (Allwinner **A733** — not H618 as earlier notes said; see the user manual PDF
 > in this dir). **Resolved 2026-07-12: the board was never broken.** It boots
 > the official Orange Pi Ubuntu Jammy image (kernel 6.6.x-sun60iw2) fine — it
@@ -122,7 +122,9 @@ timer resets while turning) so electrical coupling can't fake a press.
 > out connection/coupling; it was the encoder.)
 
 The two ST7789 HAT buttons are on GPIO 23/24 (handled in `main.py`). The 55" IR
-touch frame is USB and appears as `/dev/input/eventN` (evdev) — not yet wired in.
+touch frame is USB, appears as `/dev/input/eventN` (evdev) and is handled by
+`radiowall/input/touch.py`; calibrate it to the map print from the on-device
+menu (Setup → Touch calibration).
 
 ## Run the emulator (Windows / any dev machine)
 
@@ -341,14 +343,19 @@ Gotchas collected the hard way:
 
 ```
 linux/
-├── PLAN.md              ← master plan, build order, design decisions
 ├── README.md            ← this file
 ├── config.example.env   ← runtime settings template → /etc/radiowall.env
 ├── pyproject.toml
-├── systemd/
-│   └── radiowall.service
+├── systemd/             ← radiowall.service, radiowall-places.{service,timer},
+│                          bluealsa.service
+├── tests/               ← ~127 pure-Python tests (no hardware needed)
+├── data/                ← places.bin + countries.json (refreshed on-device)
 └── radiowall/
-    ├── main.py          ← entry point: mockup + visualizer loop, buttons
+    ├── main.py          ← entry point: render loop, input dispatch
+    ├── radio.py         ← RadioWorker: sessions, sleep timer, history, skips
+    ├── state.py         ← thread-safe UI snapshot
+    ├── linkplay.py      ← WiiM HTTPS client (incl. multiroom, switchmode)
+    ├── history.py       ← playback history + favorites (persisted)
     ├── logging_setup.py
     ├── config.py        ← persistent config store (setup UI writes it)
     ├── discovery.py     ← WiiM/LinkPlay SSDP discovery
@@ -361,15 +368,14 @@ linux/
     │   ├── setup_ui.py  ← on-device setup: speaker / WiFi / calibration
     │   ├── visualizer.py← vfd / bars / mirror / radial / wave / scope / waterfall / vu
     │   └── mirror.py    ← broadcast frames to the LAN viewer
+    ├── display/pixel_shift.py ← OLED burn-in orbit
+    ├── input/           ← encoder (GPIO), gestures, IR-frame touch (evdev)
     ├── audio/
-    │   ├── hub.py       ← fetch upstream stream once, fan out
-    │   ├── proxy.py     ← re-serve to the WiiM at :8000
-    │   └── decoder.py   ← ffmpeg → PCM → FFT for the visualizer
+    │   ├── hub.py       ← legacy demo-mode stream fan-out
+    │   ├── proxy.py     ← legacy demo-mode re-serve at :8000
+    │   └── decoder.py   ← ffmpeg tap → FFT bands / ICY titles / RMS
     └── tools/
+        ├── refresh_places.py  ← weekly places.bin refresh (systemd timer)
         ├── display_mirror.py  ← laptop-side frame viewer
         └── udp_log_listen.py  ← laptop-side log viewer
 ```
-
-Still to come (held until final hardware is wired): Radio.garden, LinkPlay,
-`places.bin` lookup, evdev touch/encoder input, the state machine — see PLAN.md
-build order.
