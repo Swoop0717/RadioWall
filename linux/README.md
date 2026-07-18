@@ -352,6 +352,8 @@ linux/
     ├── logging_setup.py
     ├── config.py        ← persistent config store (setup UI writes it)
     ├── discovery.py     ← WiiM/LinkPlay SSDP discovery
+    ├── btaudio.py       ← bluetoothctl scan/pair/connect
+    ├── btplayer.py      ← BT output: ffmpeg → bluealsa A2DP
     ├── wifi.py          ← nmcli scan/connect wrappers
     ├── display/
     │   ├── factory.py   ← picks emulator / st7789 / ssd1322 by env

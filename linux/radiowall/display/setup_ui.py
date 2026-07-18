@@ -10,10 +10,13 @@ Screens:
   HISTORY    recently played stations; press = replay, 2x = star
   FAVORITES  starred history entries
   SLEEP      oven-style dial, 10/30-min steps
-  SETUP_MENU Speaker · WiFi · Touch calibration · Info
+  SETUP_MENU Speaker (WiFi) · Speaker (BT) · WiFi · Touch calib · Info
   SPEAKER    SSDP-discover LinkPlay devices; press = make it the main
              speaker (● marker), 2x = join/remove it from the main
              speaker's multiroom group (+ marker)
+  BTSPEAKER  bluetoothctl scan; press = pair+connect+use as output
+             (the board decodes and streams via bluealsa/A2DP),
+             2x = forget the device
   WIFI       nmcli scan, pick an SSID (known ones connect directly)
   PASSWORD   rotary character entry for WiFi passwords
   CALIB      tap top-left then bottom-right corner → config['touch_calib']
@@ -65,15 +68,16 @@ _PW_STRIP = _PW_CONTROLS + _PW_CHARS
 # No Stop / Exit items: hold-to-3s stops from anywhere, hold-at-root
 # closes — both already on the knob, both shown in the hint bar.
 _MENU_ITEMS = ["Sleep timer", "History", "Favorites", "Setup"]
-_SETUP_ITEMS = ["Speaker", "WiFi", "Touch calibration", "Info"]
+_SETUP_ITEMS = ["Speaker (WiFi)", "Speaker (BT)", "WiFi",
+                "Touch calibration", "Info"]
 
 # hold = back one level; at MENU it closes
 _PARENT = {
     "SLEEP": "MENU", "HISTORY": "MENU", "FAVORITES": "MENU",
     "SETUP_MENU": "MENU",
-    "SPEAKER": "SETUP_MENU", "WIFI": "SETUP_MENU",
-    "WIFI_RESULT": "SETUP_MENU", "CALIB": "SETUP_MENU",
-    "INFO": "SETUP_MENU",
+    "SPEAKER": "SETUP_MENU", "BTSPEAKER": "SETUP_MENU",
+    "WIFI": "SETUP_MENU", "WIFI_RESULT": "SETUP_MENU",
+    "CALIB": "SETUP_MENU", "INFO": "SETUP_MENU",
 }
 
 _IDLE_CLOSE_S = 30.0
@@ -188,6 +192,8 @@ class SetupUI:
             self._menu_select(_SETUP_ITEMS[self._cursor])
         elif self._screen == "SPEAKER":
             self._pick_speaker()
+        elif self._screen == "BTSPEAKER":
+            self._pick_bt()
         elif self._screen == "WIFI":
             self._pick_network()
         elif self._screen == "PASSWORD":
@@ -218,6 +224,8 @@ class SetupUI:
             self._toggle_star()
         elif self._screen == "SPEAKER":
             self._toggle_group()
+        elif self._screen == "BTSPEAKER":
+            self._forget_bt()
 
     def handle_tap(self, x: float, y: float) -> None:
         """Touch input while setup is open — used by calibration."""
@@ -259,9 +267,12 @@ class SetupUI:
                 self._items = history.entries(favorites_only=True)
         elif item == "Setup":
             self._goto("SETUP_MENU")
-        elif item == "Speaker":
+        elif item == "Speaker (WiFi)":
             self._goto("SPEAKER")
             self._spawn("Searching speakers", self._load_speakers)
+        elif item == "Speaker (BT)":
+            self._goto("BTSPEAKER")
+            self._spawn("Scanning Bluetooth", self._load_bt)
         elif item == "WiFi":
             self._goto("WIFI")
             self._start_scan()
@@ -312,15 +323,62 @@ class SetupUI:
             if not (0 <= self._cursor < len(self._items)):
                 return
             sp, is_main, _grouped = self._items[self._cursor]
-        if is_main:
+        if is_main and config.get("output") != "bt":
             self._flash(f"{sp.name} is already the speaker")
             return
         config.set("wiim_ip", sp.ip)
         config.set("wiim_name", sp.name)
+        config.set("output", "wiim")
         if self._worker is not None:
             self._worker.set_wiim(sp.ip)
         self._flash(f"Speaker: {sp.name}")
         self._goto("MENU")
+
+    def _load_bt(self):
+        """(device, is_output) rows for the BT speaker screen."""
+        from radiowall import btaudio
+        current = (str(config.get("bt_mac") or "").upper()
+                   if config.get("output") == "bt" else "")
+        return [(d, d.mac == current) for d in btaudio.scan()]
+
+    def _pick_bt(self) -> None:
+        with self._lock:
+            if not (0 <= self._cursor < len(self._items)):
+                return
+            dev, _is_out = self._items[self._cursor]
+
+        def task():
+            from radiowall import btaudio
+            ok, msg = btaudio.connect(dev.mac)
+            if ok:
+                config.set("bt_mac", dev.mac)
+                config.set("bt_name", dev.name)
+                config.set("output", "bt")
+                set_bt = getattr(self._worker, "set_bt", None)
+                if set_bt is not None:
+                    set_bt(dev.mac, dev.name)
+                self._flash(f"BT speaker: {dev.name}")
+            else:
+                self._flash(f"Connect failed: {msg[:24]}")
+            return self._load_bt()
+
+        self._spawn(f"Pairing {dev.name}", task)
+
+    def _forget_bt(self) -> None:
+        with self._lock:
+            if not (0 <= self._cursor < len(self._items)):
+                return
+            dev, is_out = self._items[self._cursor]
+
+        def task():
+            from radiowall import btaudio
+            btaudio.forget(dev.mac)
+            if is_out:                     # forgot the active output
+                config.set("output", "wiim")
+            self._flash(f"Forgot {dev.name}")
+            return self._load_bt()
+
+        self._spawn("Removing", task)
 
     def _toggle_group(self) -> None:
         """2x on a speaker row: join it to / remove it from the main
@@ -441,7 +499,8 @@ class SetupUI:
                 "SETUP_MENU": "SETUP",
                 "HISTORY": "HISTORY",
                 "FAVORITES": "FAVORITES",
-                "SPEAKER": "SPEAKER",
+                "SPEAKER": "SPEAKER · WIFI",
+                "BTSPEAKER": "SPEAKER · BT",
                 "WIFI": "WIFI",
                 "WIFI_RESULT": "WIFI",
                 "SLEEP": "SLEEP TIMER",
@@ -479,6 +538,15 @@ class SetupUI:
                     ]
                 self._draw_list(d, device, fs, rows, self._cursor,
                                 empty="No speakers found")
+            elif self._screen == "BTSPEAKER":
+                with self._lock:
+                    rows = [
+                        f"{'●' if is_out else '+' if dev.paired else ' '} "
+                        f"{dev.name}"
+                        for dev, is_out in self._items
+                    ]
+                self._draw_list(d, device, fs, rows, self._cursor,
+                                empty="No devices found")
             elif self._screen == "WIFI":
                 with self._lock:
                     rows = [
@@ -518,6 +586,7 @@ class SetupUI:
             "HISTORY": "press·play  2x·star  hold·back",
             "FAVORITES": "press·play  2x·unstar  hold·back",
             "SPEAKER": "press·main  2x·group  hold·back",
+            "BTSPEAKER": "press·use  2x·forget  hold·back",
         }.get(self._screen, "hold·back")
         hw = d.textlength(hint, font=fs.tiny)
         d.text((W - hw - 2, 0), hint, font=fs.tiny, fill=AMBER_GHOST)

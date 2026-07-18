@@ -121,12 +121,11 @@ class RadioWorker:
         self._places = places
         self._rg = rg or RadioGarden()
         if wiim is not None:
-            self._wiim: LinkPlay | None = wiim
+            self._wiim: object | None = wiim
         else:
-            ip = wiim_ip()
-            self._wiim = LinkPlay(ip) if ip else None
-            if not ip:
-                log.warning("no WiiM configured — hold the knob for setup")
+            self._wiim = self._make_output()
+            if self._wiim is None:
+                log.warning("no speaker configured — hold the knob for setup")
         self._use_decoder = use_decoder
         self._queue: queue.Queue[Command] = queue.Queue()
         self._session: Session | None = None
@@ -199,13 +198,34 @@ class RadioWorker:
         left = deadline - time.monotonic()
         return int(left // 60) + 1 if left > 0 else 0
 
+    @staticmethod
+    def _make_output():
+        """Build the output client from config: WiiM (LinkPlay) or a
+        Bluetooth speaker (BtPlayer — board decodes, bluealsa sends).
+        RADIOWALL_WIIM_IP still forces the WiiM path for dev setups."""
+        from radiowall import config
+        if (not os.getenv("RADIOWALL_WIIM_IP", "").strip()
+                and config.get("output") == "bt" and config.get("bt_mac")):
+            from radiowall.btplayer import BtPlayer
+            return BtPlayer(str(config.get("bt_mac")),
+                            str(config.get("bt_name") or ""))
+        ip = wiim_ip()
+        return LinkPlay(ip) if ip else None
+
     def set_wiim(self, ip: str) -> None:
-        """Swap the speaker (called by the setup UI after discovery).
-        Just an attribute swap — no network here, this runs on the
-        render thread."""
+        """Swap to a WiiM speaker (called by the setup UI). Just an
+        attribute swap — no network here, this runs on the render
+        thread."""
         self._wiim = LinkPlay(ip)
         self._sent_volume = None
-        log.info("speaker set to %s", ip)
+        log.info("speaker set to WiiM %s", ip)
+
+    def set_bt(self, mac: str, name: str = "") -> None:
+        """Swap output to a Bluetooth speaker."""
+        from radiowall.btplayer import BtPlayer
+        self._wiim = BtPlayer(mac, name)
+        self._sent_volume = None
+        log.info("speaker set to BT %s (%s)", name or mac, mac)
 
     # --- worker thread ----------------------------------------------------
 

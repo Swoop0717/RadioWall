@@ -202,7 +202,7 @@ def test_setup_speaker_pick_saves_and_applies(ui, cfg):
 def test_setup_wifi_password_entry_flow(ui, cfg):
     u, _ = ui
     _into_setup(u)
-    u.handle_rotate(+1)                    # SETUP → WiFi
+    u.handle_rotate(+2)                    # SETUP → WiFi
     u.handle_short()
     _wait_items(u)
     u.handle_rotate(+1)                    # NewNet (unknown, secured)
@@ -227,7 +227,7 @@ def test_setup_wifi_password_entry_flow(ui, cfg):
 def test_setup_known_network_connects_without_password(ui):
     u, _ = ui
     _into_setup(u)
-    u.handle_rotate(+1)
+    u.handle_rotate(+2)
     u.handle_short()                       # WiFi
     _wait_items(u)
     u.handle_short()                       # HomeNet (known)
@@ -240,7 +240,7 @@ def test_setup_known_network_connects_without_password(ui):
 def test_setup_calibration_two_taps(ui, cfg):
     u, _ = ui
     _into_setup(u)
-    u.handle_rotate(+2)                    # Touch calibration
+    u.handle_rotate(+3)                    # Touch calibration
     u.handle_short()
     assert u._screen == "CALIB"
     u.handle_tap(0.91, 0.88)               # corners in either order
@@ -252,7 +252,7 @@ def test_setup_calibration_two_taps(ui, cfg):
 def test_setup_calibration_rejects_degenerate_rect(ui, cfg):
     u, _ = ui
     _into_setup(u)
-    u.handle_rotate(+2)
+    u.handle_rotate(+3)
     u.handle_short()
     u.handle_tap(0.5, 0.5)
     u.handle_tap(0.52, 0.9)                # x too close → restart
@@ -547,3 +547,81 @@ def test_grouped_slave_hidden_from_ssdp_still_listed(ui, cfg, monkeypatch):
     with u._lock:
         ips = [(sp.ip, grouped) for sp, _m, grouped in u._items]
     assert ("192.168.0.63", True) in ips   # slave visible and marked
+
+
+# --- bluetooth speaker ----------------------------------------------------------
+
+def test_bt_screen_pick_sets_output_and_worker(ui, cfg, monkeypatch):
+    from radiowall import btaudio
+    from radiowall.btaudio import BtDevice
+
+    monkeypatch.setattr(btaudio, "scan", lambda: [
+        BtDevice("AA:BB:CC:DD:EE:FF", "JBL Flip", paired=True),
+        BtDevice("11:22:33:44:55:66", "Soundcore"),
+    ])
+    monkeypatch.setattr(btaudio, "connect",
+                        lambda mac: (True, "connected"))
+
+    u, worker = ui
+    worker.bt = []
+    worker.set_bt = lambda mac, name: worker.bt.append((mac, name))
+    _into_setup(u)
+    u.handle_rotate(+1)                    # Speaker (BT)
+    u.handle_short()
+    assert u._screen == "BTSPEAKER"
+    _wait_items(u)
+    u.handle_short()                       # JBL Flip (sorted first: paired)
+    _wait_items(u)
+    assert cfg.get("output") == "bt"
+    assert cfg.get("bt_mac") == "AA:BB:CC:DD:EE:FF"
+    assert worker.bt == [("AA:BB:CC:DD:EE:FF", "JBL Flip")]
+
+
+def test_bt_forget_active_output_falls_back_to_wiim(ui, cfg, monkeypatch):
+    from radiowall import btaudio
+    from radiowall.btaudio import BtDevice
+
+    cfg.set("output", "bt")
+    cfg.set("bt_mac", "AA:BB:CC:DD:EE:FF")
+    monkeypatch.setattr(btaudio, "scan", lambda: [
+        BtDevice("AA:BB:CC:DD:EE:FF", "JBL Flip", paired=True)])
+    monkeypatch.setattr(btaudio, "forget", lambda mac: True)
+
+    u, _ = ui
+    _into_setup(u)
+    u.handle_rotate(+1)
+    u.handle_short()
+    _wait_items(u)
+    with u._lock:
+        assert u._items[0][1] is True      # marked as active output
+    u.handle_double()                      # forget it
+    _wait_items(u)
+    assert cfg.get("output") == "wiim"
+
+
+def test_btaudio_parsing_filters_nameless():
+    from radiowall.btaudio import _parse_devices
+
+    out = ("Device AA:BB:CC:DD:EE:FF JBL Flip 5\n"
+           "Device 4C:57:91:0C:E6:20 4C-57-91-0C-E6-20\n"
+           "garbage line\n")
+    d = _parse_devices(out)
+    assert d == {"AA:BB:CC:DD:EE:FF": "JBL Flip 5"}
+
+
+def test_worker_output_selection_from_config(cfg, monkeypatch):
+    from radiowall.radio import RadioWorker
+    from radiowall.btplayer import BtPlayer
+    from radiowall.linkplay import LinkPlay
+
+    monkeypatch.delenv("RADIOWALL_WIIM_IP", raising=False)
+    cfg.set("output", "bt")
+    cfg.set("bt_mac", "AA:BB:CC:DD:EE:FF")
+    cfg.set("bt_name", "JBL Flip")
+    out = RadioWorker._make_output()
+    assert isinstance(out, BtPlayer) and out.mac == "AA:BB:CC:DD:EE:FF"
+
+    cfg.set("output", "wiim")
+    cfg.set("wiim_ip", "192.168.0.33")
+    out = RadioWorker._make_output()
+    assert isinstance(out, LinkPlay) and out.ip == "192.168.0.33"
