@@ -66,14 +66,26 @@ def scroll_text(img: Image.Image, draw, text: str, font, y: int, width: int,
     img.paste(window, (0, y))
 
 
+# ICY titles some streams send when they have no track info — showing
+# these as "the song" reads as a broken display ("Station · -").
+_JUNK_TRACKS = {"unknown", "n/a", "na", "null", "none", "no title",
+                "notitle", "undefined", "untitled", "track", "unknown song"}
+
+
+def _is_junk_track(track: str) -> bool:
+    if not track.strip(" \t-–—._~*'\"|/\\"):
+        return True                        # only placeholder punctuation
+    return track.strip().lower() in _JUNK_TRACKS
+
+
 def band_text(snap: Snapshot) -> str:
     """What the big scrolling band shows while playing: the station
-    name, extended with the ICY track title when the station sends one
-    (and it isn't just the station name repeated). No track → exactly
-    the old layout."""
+    name, extended with the ICY track title when the station sends a
+    real one (not the station name echoed, not placeholder junk like
+    "-" or "unknown"). No track → exactly the old layout."""
     title = snap.station_title
     track = snap.track_title.strip()
-    if track and track.lower() != title.lower():
+    if track and not _is_junk_track(track) and track.lower() != title.lower():
         return f"{title}  ·  {track}"
     return title
 

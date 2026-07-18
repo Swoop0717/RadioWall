@@ -740,3 +740,18 @@ def test_output_swap_transfers_playing_station(cfg, monkeypatch):
         assert state.snapshot().phase == Phase.PLAYING
     finally:
         w.stop()
+
+
+def test_band_text_filters_junk_icy_titles():
+    from radiowall.display.screens import band_text
+    from radiowall.state import Phase, Snapshot
+
+    def snap(track):
+        return Snapshot(phase=Phase.PLAYING, station_title="Radio Shabelle",
+                        track_title=track)
+
+    for junk in ("-", " - ", "--", "...", "***", "Unknown", "n/a",
+                 "NULL", "Untitled", ""):
+        assert band_text(snap(junk)) == "Radio Shabelle", junk
+    assert band_text(snap("K'naan - Wavin' Flag")) \
+        == "Radio Shabelle  ·  K'naan - Wavin' Flag"
