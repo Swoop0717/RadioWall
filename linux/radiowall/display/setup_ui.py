@@ -39,10 +39,11 @@ AMBER_BRIGHT = (255, 210, 80)
 AMBER_DIM = (110, 75, 0)
 AMBER_GHOST = (60, 40, 0)
 
-# Password entry: controls first, then the character ranges. The OK/DEL/
-# CANCEL pseudo-keys sit at the start so they're one detent away after
-# a long scroll through the alphabet wraps around.
-_PW_CONTROLS = ["[OK]", "[DEL]", "[ESC]"]
+# Password entry: [OK] first, then the character ranges. Backspace is
+# double-press and cancel is hold (same as everywhere else), so the only
+# pseudo-key in the strip is the confirm — one detent left of 'a', and
+# also adjacent to the symbols when the wrap comes around.
+_PW_CONTROLS = ["[OK]"]
 _PW_CHARS = (
     [chr(c) for c in range(ord("a"), ord("z") + 1)]
     + [chr(c) for c in range(ord("A"), ord("Z") + 1)]
@@ -241,11 +242,6 @@ class SetupUI:
             self._goto("WIFI_RESULT")
             self._spawn(f"Joining {ssid}",
                         lambda: [wifi.connect(ssid, pw)])
-        elif key == "[DEL]":
-            self._pw_text = self._pw_text[:-1]
-        elif key == "[ESC]":
-            self._goto("WIFI")
-            self._start_scan()
         else:
             self._pw_text += key
 
@@ -365,20 +361,37 @@ class SetupUI:
         while shown and d.textlength(shown + "_", font=fs.small) > W - 8:
             shown = shown[1:]
         d.text((4, 14), shown + "_", font=fs.small, fill=AMBER)
-        # character strip, selection centered
+        # character strip, selection centered; neighbors are laid out by
+        # their real rendered width so multi-char keys like [OK] never
+        # overlap their neighbors
         y = H - 20
         cx = W // 2
-        d.text((cx - 4, y - 4), "▾", font=fs.tiny, fill=AMBER_DIM)
-        for off in range(-6, 7):
-            idx = (self._pw_pos + off) % len(_PW_STRIP)
-            key = _PW_STRIP[idx]
-            label = key if key not in (" ",) else "␣"
-            font = fs.med if off == 0 else fs.small
-            wdt = d.textlength(label, font=font)
-            x = cx + off * 18 - wdt / 2
-            if -20 < x < W + 4:
-                d.text((x, y + (0 if off == 0 else 3)), label, font=font,
-                       fill=AMBER_BRIGHT if off == 0 else AMBER_GHOST)
+        gap = 9
+
+        def _label(idx: int) -> str:
+            key = _PW_STRIP[idx % len(_PW_STRIP)]
+            return "␣" if key == " " else key
+
+        sel = _label(self._pw_pos)
+        sel_w = d.textlength(sel, font=fs.med)
+        d.text((cx - sel_w / 2, y), sel, font=fs.med, fill=AMBER_BRIGHT)
+        d.text((cx - 4, y - 5), "▾", font=fs.tiny, fill=AMBER_DIM)
+
+        x = cx + sel_w / 2 + gap                     # rightward neighbors
+        off = 1
+        while x < W and off < len(_PW_STRIP):
+            label = _label(self._pw_pos + off)
+            d.text((x, y + 3), label, font=fs.small, fill=AMBER_GHOST)
+            x += d.textlength(label, font=fs.small) + gap
+            off += 1
+        x = cx - sel_w / 2 - gap                     # leftward neighbors
+        off = 1
+        while x > 0 and off < len(_PW_STRIP):
+            label = _label(self._pw_pos - off)
+            w = d.textlength(label, font=fs.small)
+            d.text((x - w, y + 3), label, font=fs.small, fill=AMBER_GHOST)
+            x -= w + gap
+            off += 1
 
     def _draw_calib(self, d, device, fs, frame: int) -> None:
         if self._calib_stage == 0:
