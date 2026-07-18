@@ -648,6 +648,13 @@ def test_bt_pick_wiim_switches_linkplay_input(ui, cfg, monkeypatch):
             switched.append((self.ip, mode))
             return True
 
+        def get_volume(self):
+            return 28                      # the near-silent trap
+
+        def set_volume(self, v):
+            switched.append((self.ip, f"vol{v}"))
+            return True
+
         def get_slaves(self):
             return []
 
@@ -661,7 +668,9 @@ def test_bt_pick_wiim_switches_linkplay_input(ui, cfg, monkeypatch):
     u.handle_short()                       # Wiim Amp
     _wait_items(u)
     # discovery fixture lists "Wiim Amp" at 192.168.0.33 → input switched
-    assert switched == [("192.168.0.33", "bluetooth")]
+    # and the too-low device volume raised to the audible baseline
+    assert switched == [("192.168.0.33", "bluetooth"),
+                        ("192.168.0.33", "vol45")]
 
 
 def test_output_swap_closes_previous_bt_player(cfg, monkeypatch):

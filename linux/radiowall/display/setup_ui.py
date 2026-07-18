@@ -374,7 +374,16 @@ class SetupUI:
         try:
             for sp in discovery.discover(timeout_s=2.0):
                 if sp.name.strip().lower() == bt_name.strip().lower():
-                    LinkPlay(sp.ip).switch_mode("bluetooth")
+                    lp = LinkPlay(sp.ip)
+                    lp.switch_mode("bluetooth")
+                    # its device volume becomes a hidden second stage
+                    # behind the knob (which drives the A2DP link) — a
+                    # low setting makes the whole chain near-silent
+                    vol = lp.get_volume()
+                    if vol is not None and vol < 40:
+                        lp.set_volume(45)
+                        log.info("raised %s volume %d -> 45 (BT sink "
+                                 "baseline)", sp.name, vol)
                     log.info("switched LinkPlay %s (%s) input to bluetooth",
                              sp.name, sp.ip)
                     return
