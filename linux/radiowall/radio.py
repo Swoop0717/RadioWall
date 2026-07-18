@@ -339,7 +339,15 @@ class RadioWorker:
 
     def _handle_next(self) -> None:
         if self._session is None:
-            self._state.set_status("Nothing playing")
+            # idle tap = resume: bring back the most recent station
+            # instead of shrugging with "Nothing playing"
+            entries = history.entries()
+            if entries:
+                log.info("idle NEXT -> resuming %s",
+                         entries[0].station_title)
+                self._handle_play_entry(entries[0])
+            else:
+                self._state.set_status("Nothing playing")
             return
         if self._session.exhausted and not self._hop_city():
             return

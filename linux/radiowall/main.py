@@ -1,7 +1,8 @@
 """Entry point — RadioWall: touch the map, hear that city's radio.
 
 Inputs: IR touch frame (tap → play nearest city), one rotary encoder.
-The longer you hold, the more drastic: tap = next station, double-tap
+The longer you hold, the more drastic: tap = next station (resumes
+the last-played station when idle), double-tap
 = cycle now-playing ↔ visualizer screens, triple-tap = star the
 current station, hold ~0.8 s = menu (music keeps playing;
 Sleep/History/Favorites/Setup), keep holding to ~3 s = stop

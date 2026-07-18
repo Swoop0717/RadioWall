@@ -165,3 +165,50 @@ def test_worker_favorite_with_nothing_playing(hist):
         assert hist.entries() == []
     finally:
         w.stop()
+
+
+def test_idle_tap_resumes_most_recent(hist):
+    from tests.test_state import FakeRG, FakeWiim, FakePlaces, _stations
+    from radiowall.radio import RadioWorker, PlayAt, Next, Stop
+    from radiowall.state import AppState, Phase
+
+    rg = FakeRG({"p1": _stations(1)})
+    wiim = FakeWiim()
+    state = AppState()
+    w = RadioWorker(state, FakePlaces(), rg=rg, wiim=wiim, use_decoder=False)
+    w._record_after_s = 0.05
+    w.start()
+    try:
+        w.submit(PlayAt(0.0, 0.0))
+        deadline = time.time() + 2.0
+        while not hist.entries() and time.time() < deadline:
+            time.sleep(0.02)
+        w.submit(Stop())
+        time.sleep(0.2)
+        assert state.snapshot().phase == Phase.IDLE
+
+        w.submit(Next())                   # tap on the idle screen
+        time.sleep(0.3)
+        snap = state.snapshot()
+        assert snap.phase == Phase.PLAYING
+        assert snap.station_title == "S 0"
+        assert wiim.played[-1].endswith("S0")
+    finally:
+        w.stop()
+
+
+def test_idle_tap_with_empty_history_says_nothing_playing(hist):
+    from tests.test_state import FakeRG, FakeWiim, FakePlaces
+    from radiowall.radio import RadioWorker, Next
+    from radiowall.state import AppState
+
+    state = AppState()
+    w = RadioWorker(state, FakePlaces(), rg=FakeRG({}), wiim=FakeWiim(),
+                    use_decoder=False)
+    w.start()
+    try:
+        w.submit(Next())
+        time.sleep(0.3)
+        assert state.snapshot().status_text == "Nothing playing"
+    finally:
+        w.stop()
