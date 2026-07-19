@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,16 @@ except ImportError:
 
 _DEVICE_NAME_HINT = "IrScreen"
 _ABS_MAX = 32767
+
+# Ghost-touch rejection. The IR beam plane sits a few mm above the map,
+# so a forearm reaching across, a sleeve or a leaning body all produce
+# down/up cycles — but they MOVE through the plane, while a deliberate
+# fingertip stays put. Field data (Seoul test, 2026-07-19): real tap
+# traveled <0.01 normalized; arm ghosts landed at frame edges after
+# sweeping. Contacts that travel too far or are impossibly brief get
+# dropped.
+_MAX_TAP_TRAVEL = 0.04         # normalized (~4.4 cm on a 110 cm frame)
+_MIN_TAP_S = 0.02              # shorter = beam flicker, not a finger
 
 
 @dataclass(frozen=True)
@@ -66,6 +77,13 @@ class TouchInput:
         self._taps: list[Tap] = []
         self._dev = None
         self._running = False
+        # tap-assembly state (driven by _on_event; separate from the
+        # reader thread so the logic is unit-testable without evdev)
+        self._x = self._y = 0
+        self._down = False
+        self._down_t = 0.0
+        self._down_x = self._down_y = 0
+        self._travel = 0
 
         if not _HAVE_EVDEV:
             log.info("evdev unavailable; touch input disabled")
@@ -83,27 +101,51 @@ class TouchInput:
         log.info("touch frame ready: %s (%s)", dev.name, dev.path)
 
     def _loop(self) -> None:
-        x = y = 0
-        down = False
         try:
             for ev in self._dev.read_loop():
                 if not self._running:
                     break
                 if ev.type == ecodes.EV_ABS:
-                    if ev.code == ecodes.ABS_X:
-                        x = ev.value
-                    elif ev.code == ecodes.ABS_Y:
-                        y = ev.value
+                    self._on_event("abs_x" if ev.code == ecodes.ABS_X
+                                   else "abs_y" if ev.code == ecodes.ABS_Y
+                                   else "", ev.value, time.monotonic())
                 elif ev.type == ecodes.EV_KEY and ev.code == ecodes.BTN_LEFT:
-                    if ev.value:
-                        down = True
-                    elif down:
-                        down = False
-                        tap = Tap(x / _ABS_MAX, y / _ABS_MAX)
-                        with self._lock:
-                            self._taps.append(tap)
+                    self._on_event("btn", ev.value, time.monotonic())
         except OSError as e:
             log.warning("touch frame read failed (%s); touch disabled", e)
+
+    def _on_event(self, kind: str, value: int, now: float) -> None:
+        """Assemble taps from raw events; rejects plane-crossing ghosts."""
+        if kind == "abs_x":
+            self._x = value
+            if self._down:
+                self._travel = max(self._travel, abs(value - self._down_x))
+        elif kind == "abs_y":
+            self._y = value
+            if self._down:
+                self._travel = max(self._travel, abs(value - self._down_y))
+        elif kind == "btn":
+            if value:
+                self._down = True
+                self._down_t = now
+                self._down_x, self._down_y = self._x, self._y
+                self._travel = 0
+            elif self._down:
+                self._down = False
+                duration = now - self._down_t
+                travel = self._travel / _ABS_MAX
+                if travel > _MAX_TAP_TRAVEL:
+                    log.info("ghost touch rejected: traveled %.2f in %.0f ms "
+                             "(arm/sleeve crossing the beam plane?)",
+                             travel, duration * 1000)
+                    return
+                if duration < _MIN_TAP_S:
+                    log.info("ghost touch rejected: %.0f ms blip",
+                             duration * 1000)
+                    return
+                tap = Tap(self._x / _ABS_MAX, self._y / _ABS_MAX)
+                with self._lock:
+                    self._taps.append(tap)
 
     def poll(self) -> list[Tap]:
         """Drain and return taps completed since the last call."""
