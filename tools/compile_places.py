@@ -28,6 +28,7 @@ Usage:
 """
 
 import argparse
+import json
 import struct
 import sys
 from pathlib import Path
@@ -42,6 +43,56 @@ MAGIC = b"RGPL"
 VERSION = 1
 PLACE_STRUCT_SIZE = 52  # bytes per place
 HEADER_SIZE = 16
+
+# Radio.garden reports full country NAMES ("Austria"); the binary field is
+# 3 chars + NUL, so we store ISO 3166-1 alpha-2 codes ("AT"). pycountry
+# handles most names; these are radio.garden's nonstandard spellings.
+COUNTRY_OVERRIDES = {
+    "Azores": "PT",
+    "Bailiwick of Guernsey": "GG",
+    "Bailiwick of Jersey": "JE",
+    "Brunei": "BN",
+    "Cape Verde": "CV",
+    "Collectivity of Saint Martin": "MF",
+    "Democratic Republic of the Congo": "CD",
+    "Falkland Islands": "FK",
+    "Guiné-Bissau": "GW",
+    "Kosovo": "XK",
+    "Macau": "MO",
+    "Madeira": "PT",
+    "Myanmar (Burma)": "MM",
+    "New Calédonia": "NC",
+    "Palestine": "PS",
+    "Russia": "RU",
+    "Saint Helena": "SH",
+    "Saint-Pierre et Miquelon": "PM",
+    "Sint Maarten": "SX",
+    "Tahiti": "PF",
+    "The Bahamas": "BS",
+    "The Gambia": "GM",
+    "U.S. Virgin Islands": "VI",
+    "Vatican City": "VA",
+}
+
+_iso_cache: dict[str, str] = {}
+
+
+def country_to_iso2(name: str) -> str:
+    """Country name → ISO alpha-2 code; '??' when unknown."""
+    if name in _iso_cache:
+        return _iso_cache[name]
+    code = COUNTRY_OVERRIDES.get(name)
+    if code is None:
+        try:
+            import pycountry
+            code = pycountry.countries.lookup(name).alpha_2
+        except ImportError:
+            sys.exit("pycountry required: pip install pycountry")
+        except LookupError:
+            print(f"  WARNING: unknown country {name!r} -> '??'")
+            code = "??"
+    _iso_cache[name] = code
+    return code
 
 
 def fetch_places() -> list[dict]:
@@ -81,8 +132,8 @@ def encode_place(place: dict) -> bytes:
     # City name - truncate to 27 chars + null
     name = place.get("title", "Unknown")[:27].encode("utf-8", errors="replace")
 
-    # Country code
-    country = place.get("country", "??")[:3].encode("utf-8", errors="replace")
+    # Country: full name from the API → ISO alpha-2 code
+    country = country_to_iso2(place.get("country", "??")).encode("ascii")
 
     # Pack: 16s = char[16], h = int16, 28s = char[28], 4s = char[4]
     return struct.pack(
@@ -192,6 +243,12 @@ def main():
         default=5,
         help="Number of sample places to print (default: 5)"
     )
+    parser.add_argument(
+        "--countries-out",
+        type=Path,
+        default=Path(__file__).parent.parent / "linux" / "data" / "countries.json",
+        help="ISO->name JSON for the Linux UI (default: ../linux/data/countries.json)"
+    )
     args = parser.parse_args()
 
     # Set header dir default
@@ -209,6 +266,21 @@ def main():
     # Write outputs
     write_binary(places, args.output_dir / "places.bin")
     write_header(places, args.header_dir / "places_info.h")
+
+    # ISO code -> display name sidecar (radio.garden's own naming, which
+    # is already display-friendly). The Linux UI shows full names; the
+    # binary keeps 2-letter codes so the 52-byte record stays intact.
+    if args.countries_out:
+        mapping = {}
+        for place in places:
+            name = place.get("country", "")
+            code = country_to_iso2(name) if name else "??"
+            mapping.setdefault(code, name)
+        args.countries_out.parent.mkdir(parents=True, exist_ok=True)
+        args.countries_out.write_text(
+            json.dumps(dict(sorted(mapping.items())),
+                       ensure_ascii=False, indent=1))
+        print(f"Written {args.countries_out} ({len(mapping)} countries)")
 
     print("\nDone! Next steps:")
     print("  1. Upload places.bin to ESP32 LittleFS: pio run -t uploadfs")

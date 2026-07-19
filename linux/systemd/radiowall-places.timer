@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly places.bin refresh (Radio.garden churns ~3%/week)
+
+[Timer]
+OnCalendar=Mon 04:30
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

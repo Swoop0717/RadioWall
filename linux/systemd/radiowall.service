@@ -1,0 +1,26 @@
+[Unit]
+Description=RadioWall — interactive world map radio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runtime settings (display, WiiM IP, visualizer delay, mirror). The leading
+# "-" makes the file optional — the app falls back to code defaults if it's
+# absent. Copy linux/config.example.env there and edit per device.
+EnvironmentFile=-/etc/radiowall.env
+# Production install: Orange Pi Zero 3W, repo cloned as the orangepi user,
+# service runs as root (spidev + gpiochip are root-only on the vendor image).
+# Old Pi 3 B+ dev rig used /root/RadioWall instead — adjust paths if reviving.
+WorkingDirectory=/home/orangepi/RadioWall/linux
+ExecStart=/home/orangepi/RadioWall/linux/.venv/bin/python -m radiowall
+# Creates /var/lib/radiowall for the config store (setup UI writes
+# speaker choice + touch calibration there).
+StateDirectory=radiowall
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

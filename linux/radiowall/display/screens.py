@@ -1,0 +1,281 @@
+"""State-driven screens for the 256×64 OLED (and the ST7789 dev rig).
+
+One entry point: `draw_status_screen(device, frame, fs, snap)` — renders
+whatever the `Snapshot` says (idle / loading / playing, transient status,
+volume overlay). Geometry follows the proven draw_mockup layout:
+separators at 26 % / 74 % of height, big scrolling band in the middle.
+
+Demo (no hardware):
+    RADIOWALL_EMULATE=1 RADIOWALL_EMULATE_W=256 RADIOWALL_EMULATE_H=64 \
+        python -m radiowall.display.screens
+"""
+
+from __future__ import annotations
+
+from PIL import Image, ImageDraw
+
+from radiowall.display import fonts
+from radiowall.state import Phase, Snapshot
+
+AMBER = (255, 176, 0)
+AMBER_DIM = (110, 75, 0)
+
+SCROLL_PX_PER_FRAME = 2
+SCROLL_GAP = "   ·   "
+
+# Rasterizing a full-width big-font string is the most expensive draw
+# call we have (~20-40 ms on the A733 — it capped the whole loop at
+# ~22 fps). Render the looped text ONCE per title into a strip image,
+# then scroll by pasting a moving window — the per-frame cost becomes a
+# memcpy. Keyed by (text, font, fill); a handful of entries suffices
+# since titles change rarely.
+_strip_cache: dict[tuple, Image.Image] = {}
+_STRIP_CACHE_MAX = 8
+
+
+def _scroll_strip(text: str, font, fill, mode: str) -> Image.Image:
+    key = (text, id(font), fill, mode)
+    strip = _strip_cache.get(key)
+    if strip is None:
+        looped = text + SCROLL_GAP
+        bbox = ImageDraw.Draw(Image.new(mode, (1, 1))).textbbox(
+            (0, 0), looped, font=font)
+        w, h = bbox[2], bbox[3] + 2
+        # draw the loop twice so any window of `loop_w` starts in-bounds
+        strip = Image.new(mode, (2 * w, h))
+        d = ImageDraw.Draw(strip)
+        d.text((0, 0), looped, font=font, fill=fill)
+        d.text((w, 0), looped, font=font, fill=fill)
+        if len(_strip_cache) >= _STRIP_CACHE_MAX:
+            _strip_cache.pop(next(iter(_strip_cache)))
+        _strip_cache[key] = strip
+    return strip
+
+
+def scroll_text(img: Image.Image, draw, text: str, font, y: int, width: int,
+                frame: int, fill=AMBER) -> None:
+    """Horizontally scroll `text` if wider than `width`, else center it."""
+    text_w = int(draw.textlength(text, font=font))
+    if text_w <= width:
+        draw.text(((width - text_w) // 2, y), text, font=font, fill=fill)
+        return
+    strip = _scroll_strip(text, font, fill, img.mode)
+    loop_w = strip.width // 2
+    offset = (frame * SCROLL_PX_PER_FRAME) % loop_w
+    window = strip.crop((offset, 0, offset + width, strip.height))
+    img.paste(window, (0, y))
+
+
+# ICY titles some streams send when they have no track info — showing
+# these as "the song" reads as a broken display ("Station · -").
+_JUNK_TRACKS = {"unknown", "n/a", "na", "null", "none", "no title",
+                "notitle", "undefined", "untitled", "track", "unknown song"}
+
+
+def _is_junk_track(track: str) -> bool:
+    if not track.strip(" \t-–—._~*'\"|/\\"):
+        return True                        # only placeholder punctuation
+    return track.strip().lower() in _JUNK_TRACKS
+
+
+def band_text(snap: Snapshot) -> str:
+    """What the big scrolling band shows while playing: the station
+    name, extended with the ICY track title when the station sends a
+    real one (not the station name echoed, not placeholder junk like
+    "-" or "unknown"). No track → exactly the old layout."""
+    title = snap.station_title
+    track = snap.track_title.strip()
+    if track and not _is_junk_track(track) and track.lower() != title.lower():
+        return f"{title}  ·  {track}"
+    return title
+
+
+def needs_animation(snap: Snapshot, device, fs: fonts.FontSet) -> bool:
+    """True when the status screen has per-frame motion right now
+    (scrolling text, loading dots, volume flash). When False the main
+    loop skips redraws entirely — the panel keeps showing the last
+    frame, so an idle RadioWall stops burning CPU repainting identical
+    pixels 40x/s. The idle hint blink is handled by the caller (it only
+    changes every ~0.8 s)."""
+    if snap.volume_flash or snap.phase is Phase.LOADING:
+        return True
+    if snap.status_text:
+        text, font = snap.status_text, fs.big
+    elif snap.phase is Phase.PLAYING and snap.station_title:
+        text = band_text(snap)
+        font = fs.pick_big(text)
+    else:
+        return False
+    try:
+        return font.getlength(text) > device.width
+    except AttributeError:          # PIL default bitmap font
+        return len(text) * 8 > device.width
+
+
+def _band_geometry(device, fs: fonts.FontSet):
+    """Header/footer strips sized to the actual small-font metrics —
+    the old fixed 26%/74% fractions were tuned on the 135 px TFT and
+    ran the separator line through the header's descenders at 64 px."""
+    H = device.height
+    asc, desc = _metrics(fs.small)
+    strip = asc + desc + 3
+    top_sep = min(H // 3, strip)
+    bot_sep = max(int(H * 0.66), H - strip)
+    b_asc, b_desc = _metrics(fs.big)
+    band_y = top_sep + max(1, (bot_sep - top_sep - (b_asc + b_desc)) // 2 + 1)
+    return top_sep, bot_sep, band_y
+
+
+def _metrics(font) -> tuple[int, int]:
+    try:
+        return font.getmetrics()
+    except AttributeError:               # PIL default bitmap font
+        return (10, 2)
+
+
+def draw_status_screen(device, frame: int, fs: fonts.FontSet,
+                       snap: Snapshot) -> None:
+    W, H = device.width, device.height
+    pad = max(2, W // 64)
+    top_sep, bot_sep, band_y = _band_geometry(device, fs)
+
+    # Own image instead of luma's canvas() so the scroll band can paste
+    # its pre-rendered strip (canvas only exposes an ImageDraw).
+    img = Image.new(device.mode, (W, H))
+    draw = ImageDraw.Draw(img)
+
+    if snap.phase is Phase.IDLE and not snap.status_text:
+        _idle(draw, W, H, fs, frame)
+    else:
+        _header(draw, snap, fs, pad, top_sep)
+        _band(img, draw, snap, fs, band_y, W, frame)
+        # separators AFTER the band: the scroll strip is pasted with an
+        # opaque black background and would erase the bottom line
+        draw.line((0, top_sep, W, top_sep), fill=AMBER_DIM)
+        draw.line((0, bot_sep, W, bot_sep), fill=AMBER_DIM)
+
+    if snap.volume_flash:
+        _volume_overlay(draw, snap, fs, W, H, bot_sep)
+    elif snap.phase is not Phase.IDLE or snap.status_text:
+        _footer(draw, snap, fs, pad, bot_sep, W)
+
+    device.display(img)
+
+
+def _header(draw, snap: Snapshot, fs, pad: int, top_sep: int) -> None:
+    W = draw.im.size[0]
+    asc, desc = _metrics(fs.small)
+    y = max(0, (top_sep - (asc + desc)) // 2)   # centered above the line
+    right_w = 0
+    if snap.station_total:
+        right = f"{snap.station_index}/{snap.station_total}"
+        right_w = draw.textlength(right, font=fs.small)
+        draw.text((W - right_w - pad, y), right, font=fs.small, fill=AMBER)
+
+    left = snap.place_name or ""
+    if snap.country:
+        left = f"{left} · {snap.country}"
+    font = fs.pick_small(left)
+    avail = W - right_w - 3 * pad
+    while left and draw.textlength(left, font=font) > avail:
+        left = left[:-2].rstrip() + "…"    # long country names must not
+    draw.text((pad, y), left, font=font, fill=AMBER)     # hit the counter
+
+
+def _band(img, draw, snap: Snapshot, fs, band_y: int, W: int,
+          frame: int) -> None:
+    if snap.status_text:
+        scroll_text(img, draw, snap.status_text, fs.big, band_y, W, frame)
+    elif snap.phase is Phase.LOADING:
+        dots = "." * (1 + (frame // 12) % 3)
+        scroll_text(img, draw, f"Tuning{dots}", fs.big, band_y, W, frame=0)
+    else:
+        title = band_text(snap)
+        scroll_text(img, draw, title, fs.pick_big(title), band_y, W, frame)
+
+
+def _footer(draw, snap: Snapshot, fs, pad: int, bot_sep: int, W: int) -> None:
+    # Just the volume — no state word. If music plays you hear it, if it's
+    # tuning the band says so, and idle has its own screen.
+    y = bot_sep + 2   # tight: small font + descenders must fit in H-bot_sep
+    label = f"vol {snap.volume}"
+    if snap.sleep_min_left:
+        label += f"   sleep {snap.sleep_min_left}m"
+    draw.text((pad, y), label, font=fs.small, fill=AMBER)
+
+
+def _idle(draw, W: int, H: int, fs, frame: int) -> None:
+    title = "RADIOWALL"
+    hint = "touch the map"
+    tw = draw.textlength(title, font=fs.big)
+    hw = draw.textlength(hint, font=fs.small)
+    draw.text(((W - tw) // 2, int(H * 0.18)), title, font=fs.big, fill=AMBER)
+    # gentle blink so the panel doesn't look frozen
+    if (frame // 40) % 2 == 0:
+        draw.text(((W - hw) // 2, int(H * 0.68)), hint,
+                  font=fs.small, fill=AMBER_DIM)
+
+
+def _volume_overlay(draw, snap: Snapshot, fs, W: int, H: int,
+                    bot_sep: int) -> None:
+    """Replace the footer strip with a volume bar while the flash lasts."""
+    pad = max(2, W // 64)
+    y0 = bot_sep + 1
+    draw.rectangle((0, y0, W, H), fill=(0, 0, 0))
+    label = f"vol {snap.volume}"
+    lw = draw.textlength(label, font=fs.small)
+    draw.text((pad, y0 + pad), label, font=fs.small, fill=AMBER)
+    bar_x0 = int(lw) + pad * 3
+    bar_x1 = W - pad
+    bar_y0 = y0 + pad + 2
+    bar_y1 = H - pad
+    draw.rectangle((bar_x0, bar_y0, bar_x1, bar_y1), outline=AMBER_DIM)
+    fill_w = int((bar_x1 - bar_x0 - 2) * snap.volume / 100)
+    if fill_w > 0:
+        draw.rectangle((bar_x0 + 1, bar_y0 + 1,
+                        bar_x0 + 1 + fill_w, bar_y1 - 1), fill=AMBER)
+
+
+def _demo() -> None:
+    """Cycle fake snapshots in the emulator (or on the real panel)."""
+    import itertools
+    import time
+
+    from radiowall.display.factory import make_device
+
+    device = make_device()
+    fs = fonts.fonts_for(device.height)
+    snaps = [
+        ("idle", Snapshot()),
+        ("loading", Snapshot(phase=Phase.LOADING, place_name="Vienna")),
+        ("playing short", Snapshot(phase=Phase.PLAYING, place_name="Vienna",
+                                   station_title="Radio Wien",
+                                   station_index=3, station_total=12,
+                                   volume=45)),
+        ("playing long", Snapshot(phase=Phase.PLAYING, place_name="Reykjavik",
+                                  station_title="Rás 2 — Icelandic public "
+                                                "radio with a very long name",
+                                  station_index=1, station_total=4,
+                                  volume=45)),
+        ("volume flash", Snapshot(phase=Phase.PLAYING, place_name="Vienna",
+                                  station_title="Radio Wien",
+                                  station_index=3, station_total=12,
+                                  volume=72, volume_flash=True)),
+        ("error", Snapshot(phase=Phase.IDLE, status_text="No stations found",
+                           volume=45)),
+    ]
+    print("cycling demo snapshots; Ctrl+C to stop")
+    frame = 0
+    try:
+        for name, snap in itertools.cycle(snaps):
+            print(" ", name)
+            for _ in range(150):          # ~3 s per snapshot at 50 fps
+                draw_status_screen(device, frame, fs, snap)
+                frame += 1
+                time.sleep(0.02)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    _demo()

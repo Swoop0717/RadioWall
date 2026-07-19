@@ -1,0 +1,13 @@
+[Unit]
+Description=BlueALSA proxy (A2DP source for RadioWall Bluetooth output)
+Requires=bluetooth.service
+After=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa -p a2dp-source
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
