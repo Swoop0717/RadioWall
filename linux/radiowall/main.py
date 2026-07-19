@@ -138,7 +138,7 @@ def main() -> int:
     encoder = RotaryEncoder()
     gestures = GestureDetector()
     touch = TouchInput()
-    setup = SetupUI(worker)
+    setup = SetupUI(worker, places)
     vol_step = int(os.getenv("RADIOWALL_VOL_STEP", "2"))
     screen = 0
 

@@ -755,3 +755,40 @@ def test_band_text_filters_junk_icy_titles():
         assert band_text(snap(junk)) == "Radio Shabelle", junk
     assert band_text(snap("K'naan - Wavin' Flag")) \
         == "Radio Shabelle  ·  K'naan - Wavin' Flag"
+
+
+# --- touch test screen ----------------------------------------------------------
+
+def test_touch_test_resolves_without_playing(ui, cfg, monkeypatch):
+    from radiowall.display import setup_ui as su
+    from tests.test_state import FakePlaces
+
+    u, worker = ui
+    u._places = FakePlaces()
+    worker.played = []
+    _into_setup(u)
+    u.handle_rotate(+4)                    # Touch test
+    u.handle_short()
+    assert u._screen == "TOUCHTEST"
+    # identity calibration: (0.5, 0.25) → lon 0, lat 45
+    u.handle_tap(0.5, 0.25)
+    x, y, lat, lon, name, _country, dist = u._tt_last
+    assert (lat, lon) == (45.0, 0.0)
+    assert name == "Alpha"                 # nearest FakePlace to (45, 0)
+    assert dist > 0
+    assert worker.played == []             # nothing was played
+
+
+def test_touch_test_respects_saved_calibration(ui, cfg):
+    from tests.test_state import FakePlaces
+
+    u, _ = ui
+    u._places = FakePlaces()
+    # map occupies the middle half of the frame in both axes
+    cfg.set("touch_calib", {"x0": 0.25, "y0": 0.25, "x1": 0.75, "y1": 0.75})
+    _into_setup(u)
+    u.handle_rotate(+4)
+    u.handle_short()
+    u.handle_tap(0.5, 0.5)                 # frame center = map center
+    _x, _y, lat, lon, *_ = u._tt_last
+    assert (lat, lon) == (0.0, 0.0)

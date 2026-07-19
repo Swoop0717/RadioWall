@@ -20,6 +20,9 @@ Screens:
   WIFI       nmcli scan, pick an SSID (known ones connect directly)
   PASSWORD   rotary character entry for WiFi passwords
   CALIB      tap top-left then bottom-right corner → config['touch_calib']
+  TOUCHTEST  tap anywhere: shows the resolved city/lat/lon/raw coords
+             through the SAVED calibration, plays nothing — the tool
+             for verifying a freshly calibrated map print
   INFO       SSID, IP, configured speaker
 
 All network work (discovery, scan, connect) runs on daemon threads;
@@ -41,7 +44,7 @@ import time
 
 from luma.core.render import canvas
 
-from radiowall import config, discovery, history, wifi
+from radiowall import config, discovery, geo, history, wifi
 from radiowall.display import fonts
 from radiowall.linkplay import LinkPlay
 
@@ -69,7 +72,7 @@ _PW_STRIP = _PW_CONTROLS + _PW_CHARS
 # closes — both already on the knob, both shown in the hint bar.
 _MENU_ITEMS = ["Sleep timer", "History", "Favorites", "Setup"]
 _SETUP_ITEMS = ["Speaker (WiFi)", "Speaker (BT)", "WiFi",
-                "Touch calibration", "Info"]
+                "Touch calibration", "Touch test", "Info"]
 
 # hold = back one level; at MENU it closes
 _PARENT = {
@@ -77,7 +80,8 @@ _PARENT = {
     "SETUP_MENU": "MENU",
     "SPEAKER": "SETUP_MENU", "BTSPEAKER": "SETUP_MENU",
     "WIFI": "SETUP_MENU", "WIFI_RESULT": "SETUP_MENU",
-    "CALIB": "SETUP_MENU", "INFO": "SETUP_MENU",
+    "CALIB": "SETUP_MENU", "TOUCHTEST": "SETUP_MENU",
+    "INFO": "SETUP_MENU",
 }
 
 _IDLE_CLOSE_S = 30.0
@@ -92,8 +96,9 @@ _SLEEP_MAX_MIN = 720
 
 
 class SetupUI:
-    def __init__(self, worker=None) -> None:
+    def __init__(self, worker=None, places=None) -> None:
         self._worker = worker
+        self._places = places
         self.active = False
         self._screen = "MENU"
         self._cursor = 0
@@ -108,6 +113,7 @@ class SetupUI:
         self._pw_pos = len(_PW_CONTROLS)  # start on 'a', not on [OK]
         self._calib_stage = 0
         self._calib_first: tuple[float, float] | None = None
+        self._tt_last: tuple | None = None   # touch-test result
         self._sleep_min = 0
         self._sleep_last_turn = 0.0
         self._last_input = 0.0
@@ -228,7 +234,11 @@ class SetupUI:
             self._forget_bt()
 
     def handle_tap(self, x: float, y: float) -> None:
-        """Touch input while setup is open — used by calibration."""
+        """Touch input while setup is open — calibration + touch test."""
+        self._last_input = time.monotonic()
+        if self._screen == "TOUCHTEST":
+            self._tt_tap(x, y)
+            return
         if self._screen != "CALIB":
             return
         if self._calib_stage == 0:
@@ -290,6 +300,9 @@ class SetupUI:
             self._goto("CALIB")
             self._calib_stage = 0
             self._calib_first = None
+        elif item == "Touch test":
+            self._goto("TOUCHTEST")
+            self._tt_last = None
         elif item == "Info":
             self._goto("INFO")
             self._spawn("Reading status", self._gather_info)
@@ -532,6 +545,7 @@ class SetupUI:
                 "SLEEP": "SLEEP TIMER",
                 "PASSWORD": self._pw_ssid[:20],
                 "CALIB": "CALIBRATE",
+                "TOUCHTEST": "TOUCH TEST",
                 "INFO": "INFO",
             }.get(self._screen, "MENU")
             self._draw_titlebar(d, device, fs, title, frame)
@@ -596,6 +610,8 @@ class SetupUI:
                 self._draw_password(d, device, fs)
             elif self._screen == "CALIB":
                 self._draw_calib(d, device, fs, frame)
+            elif self._screen == "TOUCHTEST":
+                self._draw_touch_test(d, device, fs)
             elif self._screen == "INFO":
                 with self._lock:
                     rows = list(self._items)
@@ -612,6 +628,7 @@ class SetupUI:
             "HISTORY": "press·play  2x·star  hold·back",
             "FAVORITES": "press·play  2x·unstar  hold·back",
             "SPEAKER": "press·main  2x·group  hold·back",
+            "TOUCHTEST": "tap·test  hold·back",
             "BTSPEAKER": "press·use  2x·forget  hold·back",
         }.get(self._screen, "hold·back")
         hw = d.textlength(hint, font=fs.tiny)
@@ -720,6 +737,47 @@ class SetupUI:
             sub = "turn to set a timer"
         sw = d.textlength(sub, font=fs.tiny)
         d.text(((W - sw) // 2, H - 13), sub, font=fs.tiny, fill=AMBER_DIM)
+
+    def _tt_tap(self, x: float, y: float) -> None:
+        """Resolve a tap exactly like a play-tap would — same saved
+        calibration, same nearest-city lookup — but silently."""
+        import math
+
+        from radiowall.places_db import country_name
+
+        cal = geo.load_calibration()
+        lat, lon = geo.tap_to_latlon(x, y, cal)
+        name, country, dist = "(no places db)", "", 0.0
+        if self._places is not None:
+            place = self._places.find_nearest(lat, lon)
+            if place is not None:
+                name = place.name
+                country = country_name(place.country)
+                dlat = (place.lat - lat) * 111.0
+                dlon = ((place.lon - lon) * 111.0
+                        * math.cos(math.radians(lat)))
+                dist = (dlat * dlat + dlon * dlon) ** 0.5
+        self._tt_last = (x, y, lat, lon, name, country, dist)
+        log.info("touch test: (%.3f, %.3f) -> (%.2f, %.2f) -> %s, %s "
+                 "(%.0f km)", x, y, lat, lon, name, country, dist)
+
+    def _draw_touch_test(self, d, device, fs) -> None:
+        W, H = device.width, device.height
+        if self._tt_last is None:
+            self._draw_center(d, device, fs, "Tap the map",
+                              "shows the resolved city — plays nothing")
+            return
+        x, y, lat, lon, name, country, dist = self._tt_last
+        line1 = f"{name} · {country}" if country else name
+        w1 = d.textlength(line1, font=fs.pick_small(line1))
+        d.text(((W - int(w1)) // 2, 16), line1,
+               font=fs.pick_small(line1), fill=AMBER_BRIGHT)
+        line2 = f"lat {lat:+.2f}  lon {lon:+.2f}  ·  {dist:.0f} km to city"
+        w2 = d.textlength(line2, font=fs.tiny)
+        d.text(((W - int(w2)) // 2, 34), line2, font=fs.tiny, fill=AMBER)
+        line3 = f"raw x {x:.3f}  y {y:.3f}"
+        w3 = d.textlength(line3, font=fs.tiny)
+        d.text(((W - int(w3)) // 2, 48), line3, font=fs.tiny, fill=AMBER_DIM)
 
     def _draw_calib(self, d, device, fs, frame: int) -> None:
         if self._calib_stage == 0:
